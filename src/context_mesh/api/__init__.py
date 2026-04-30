@@ -8,9 +8,12 @@ from context_mesh.api.types import (
     NODE_COLUMNS,
     EdgeCreatedBy,
     EdgeRelation,
+    MemoryCluster,
     MemoryEdge,
     MemoryNode,
     NodeKind,
+    ScoredNode,
+    VectorSearchResult,
 )
 
 __all__ = [
@@ -18,8 +21,11 @@ __all__ = [
     "NODE_COLUMNS",
     "EdgeCreatedBy",
     "EdgeRelation",
+    "MemoryCluster",
     "MemoryEdge",
     "MemoryNode",
     "Mesh",
     "NodeKind",
+    "ScoredNode",
+    "VectorSearchResult",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 import time
 import uuid
@@ -16,9 +17,12 @@ from context_mesh.api.types import (
     VALID_NODE_KINDS,
     EdgeCreatedBy,
     EdgeRelation,
+    MemoryCluster,
     MemoryEdge,
     MemoryNode,
     NodeKind,
+    ScoredNode,
+    VectorSearchResult,
     _dump_list,
 )
 from context_mesh.storage import SqliteVecBackend
@@ -27,6 +31,8 @@ if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
     from types import TracebackType
+
+    from context_mesh.embeddings.protocol import EmbeddingProvider
 
 
 _NODE_COL_LIST: Final[str] = ", ".join(NODE_COLUMNS)
@@ -89,6 +95,67 @@ _SELECT_VECTOR_SQL: Final[str] = (
     "WHERE vn.node_id = ?"
 )
 _SELECT_VECTOR_META_EXISTS_SQL: Final[str] = "SELECT 1 FROM vector_meta WHERE node_id = ?"
+
+_SEARCH_OVER_FETCH_FACTOR: Final[int] = 4
+
+_SEARCH_BY_VECTOR_INNER_SQL: Final[str] = (
+    "WITH knn AS ("
+    " SELECT node_id, distance FROM vec_nodes "
+    "WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+    ")"
+)
+_SEARCH_BY_VECTOR_OUTER_SELECT: Final[str] = (
+    f"SELECT knn.distance, {', '.join('n.' + c for c in NODE_COLUMNS)} "
+    "FROM knn JOIN nodes n ON knn.node_id = n.id"
+)
+_SEARCH_BY_VECTOR_ORDER_TAIL: Final[str] = " ORDER BY knn.distance LIMIT ?"
+
+_DEFAULT_RETRIEVE_LIMIT: Final[int] = 5
+_RETRIEVE_OVERFETCH_FACTOR: Final[int] = 4
+_RETRIEVE_MIN_OVERFETCH: Final[int] = 20
+_GRAPH_EXPAND_FROM_TOP_N: Final[int] = 5
+
+_DEFAULT_MIN_CONTENT_SCORE: Final[float] = 30.0
+_DEFAULT_QUALITY_THRESHOLD: Final[float] = 40.0
+
+_RECENCY_HALF_LIFE_DAYS: Final[int] = 30
+_SECONDS_PER_DAY: Final[int] = 86400
+
+_W_SEMANTIC: Final[float] = 0.50
+_W_RELEVANCE: Final[float] = 0.20
+_W_RECENCY: Final[float] = 0.10
+_W_IMPORTANCE: Final[float] = 0.10
+_W_USAGE: Final[float] = 0.10
+
+_GRAPH_RELATIONS: Final[frozenset[str]] = frozenset(
+    {"applies_to", "generalizes", "supersedes", "contradicts"}
+)
+
+
+def _compute_recency_score(
+    created_at: int, now: int, half_life_days: int = _RECENCY_HALF_LIFE_DAYS
+) -> float:
+    """Exponential decay: score=100 at age 0, halves every `half_life_days`."""
+    age_days = max(0.0, (now - created_at) / _SECONDS_PER_DAY)
+    decay = math.exp(-math.log(2) * age_days / half_life_days)
+    return decay * 100.0
+
+
+def _compute_usage_score(usage_count: int, helpful_count: int) -> float:
+    """Combine retrieval count + helpful feedback into [0, 100]."""
+    base = math.log1p(max(0, usage_count)) * 10.0
+    helpful_factor = 1.0 / (1.0 + math.exp(-max(0, helpful_count) / 5.0))
+    return min(100.0, base * helpful_factor * 2.0)
+
+
+def _semantic_score_from_distance(distance: float) -> float:
+    """Map L2 distance (unit-normalized vectors → [0, 2]) to similarity [0, 100]."""
+    return max(0.0, min(100.0, 100.0 * (1.0 - distance / 2.0)))
+
+
+def _compute_edge_relevance(edge: MemoryEdge, hop: int = 1) -> float:
+    """Edge-derived relevance score in [0, 100], damped by hop distance."""
+    return float(edge.confidence) * 100.0 / (1.0 + (hop - 1))
 
 
 class Mesh:
@@ -568,6 +635,235 @@ class Mesh:
             metadata={"action": "delete_vector"},
         )
         return True
+
+    def search_by_vector(
+        self,
+        query_embedding: list[float] | bytes,
+        *,
+        k: int = 10,
+        kind: NodeKind | None = None,
+        scope_id: str | None = None,
+    ) -> list[VectorSearchResult]:
+        """Top-k nearest nodes by vec_nodes kNN, ascending distance (L2)."""
+        if k < 0:
+            raise ValueError(f"k must be non-negative; got {k}")
+        if k == 0:
+            return []
+        if kind is not None and kind not in VALID_NODE_KINDS:
+            raise ValueError(
+                f"invalid node kind {kind!r}; expected one of {sorted(VALID_NODE_KINDS)}"
+            )
+
+        embedding_bytes = self._coerce_embedding_bytes(query_embedding)
+
+        has_filter = kind is not None or scope_id is not None
+        inner_limit = k * _SEARCH_OVER_FETCH_FACTOR if has_filter else k
+
+        where_parts: list[str] = []
+        params: list[Any] = [embedding_bytes, inner_limit]
+        if kind is not None:
+            where_parts.append("n.kind = ?")
+            params.append(kind)
+        if scope_id is not None:
+            where_parts.append("n.scope_id = ?")
+            params.append(scope_id)
+
+        where_clause = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        sql = (
+            _SEARCH_BY_VECTOR_INNER_SQL
+            + " "
+            + _SEARCH_BY_VECTOR_OUTER_SELECT
+            + where_clause
+            + _SEARCH_BY_VECTOR_ORDER_TAIL
+        )
+        params.append(k)
+
+        rows = self._backend.connection.execute(sql, params).fetchall()
+        results: list[VectorSearchResult] = []
+        for row in rows:
+            distance = float(row[0])
+            node = MemoryNode.from_row(row[1:])
+            results.append(VectorSearchResult(node_id=node.id, distance=distance, node=node))
+        return results
+
+    def _hybrid_retrieve(
+        self,
+        query_embedding: list[float] | bytes,
+        *,
+        limit: int = _DEFAULT_RETRIEVE_LIMIT,
+        kind: NodeKind | None = None,
+        scope_id: str | None = None,
+        min_content_score: float = _DEFAULT_MIN_CONTENT_SCORE,
+        quality_threshold: float = _DEFAULT_QUALITY_THRESHOLD,
+        now: int | None = None,
+    ) -> MemoryCluster:
+        """Run the hybrid retrieval algorithm. Internal; public surface is `search()`."""
+        if limit < 0:
+            raise ValueError(f"limit must be non-negative; got {limit}")
+        if limit == 0:
+            return MemoryCluster(nodes=[], edges=[], cluster_confidence=None)
+
+        effective_now = int(time.time()) if now is None else now
+
+        k = max(limit * _RETRIEVE_OVERFETCH_FACTOR, _RETRIEVE_MIN_OVERFETCH)
+        candidates = self.search_by_vector(query_embedding, k=k, kind=kind, scope_id=scope_id)
+
+        scored: dict[str, ScoredNode] = {}
+        primary_ids: list[str] = []
+        for hit in candidates:
+            sem = _semantic_score_from_distance(hit.distance)
+            if sem < min_content_score:
+                continue
+            rec = _compute_recency_score(hit.node.created_at, effective_now)
+            imp = float(hit.node.importance) * 100.0
+            usg = _compute_usage_score(hit.node.usage_count, hit.node.helpful_count)
+            composite = (
+                sem * _W_SEMANTIC
+                + 0.0 * _W_RELEVANCE
+                + rec * _W_RECENCY
+                + imp * _W_IMPORTANCE
+                + usg * _W_USAGE
+            )
+            scored[hit.node.id] = ScoredNode(
+                node=hit.node,
+                semantic_score=sem,
+                recency_score=rec,
+                importance_score=imp,
+                usage_score=usg,
+                relevance_score=0.0,
+                composite_score=composite,
+            )
+            primary_ids.append(hit.node.id)
+
+        for src_id in primary_ids[:_GRAPH_EXPAND_FROM_TOP_N]:
+            for edge in self.get_edges(src_id, direction="both"):
+                if edge.relation not in _GRAPH_RELATIONS:
+                    continue
+                other_id = edge.to_node_id if edge.from_node_id == src_id else edge.from_node_id
+                if other_id == src_id:
+                    continue
+                other_node = self.get(other_id)
+                if other_node is None:
+                    continue
+                if kind is not None and other_node.kind != kind:
+                    continue
+                if scope_id is not None and other_node.scope_id != scope_id:
+                    continue
+                new_relevance = _compute_edge_relevance(edge, hop=1)
+                existing = scored.get(other_id)
+                if existing is not None:
+                    if new_relevance <= existing.relevance_score:
+                        continue
+                    sem = existing.semantic_score
+                    rec = existing.recency_score
+                    imp = existing.importance_score
+                    usg = existing.usage_score
+                    node_obj = existing.node
+                else:
+                    sem = 0.0
+                    rec = _compute_recency_score(other_node.created_at, effective_now)
+                    imp = float(other_node.importance) * 100.0
+                    usg = _compute_usage_score(other_node.usage_count, other_node.helpful_count)
+                    node_obj = other_node
+                composite = (
+                    sem * _W_SEMANTIC
+                    + new_relevance * _W_RELEVANCE
+                    + rec * _W_RECENCY
+                    + imp * _W_IMPORTANCE
+                    + usg * _W_USAGE
+                )
+                scored[other_id] = ScoredNode(
+                    node=node_obj,
+                    semantic_score=sem,
+                    recency_score=rec,
+                    importance_score=imp,
+                    usage_score=usg,
+                    relevance_score=new_relevance,
+                    composite_score=composite,
+                )
+
+        ranked = sorted(scored.values(), key=lambda s: s.composite_score, reverse=True)
+        selected = ranked[:limit]
+        selected = [s for s in selected if s.composite_score >= quality_threshold]
+
+        selected_ids = {s.node.id for s in selected}
+        edges_among: list[MemoryEdge] = []
+        if selected_ids:
+            seen_edge_ids: set[str] = set()
+            for s in selected:
+                for edge in self.get_edges(s.node.id, direction="both"):
+                    if edge.id in seen_edge_ids:
+                        continue
+                    if edge.from_node_id in selected_ids and edge.to_node_id in selected_ids:
+                        edges_among.append(edge)
+                        seen_edge_ids.add(edge.id)
+
+        if not selected:
+            return MemoryCluster(nodes=[], edges=[], cluster_confidence=None)
+
+        confidence_raw = sum(s.composite_score for s in selected) / (len(selected) * 100.0)
+        confidence = max(0.0, min(1.0, confidence_raw))
+        return MemoryCluster(nodes=selected, edges=edges_among, cluster_confidence=confidence)
+
+    def search(
+        self,
+        query: str,
+        *,
+        embedder: EmbeddingProvider,
+        limit: int = _DEFAULT_RETRIEVE_LIMIT,
+        kind: NodeKind | None = None,
+        scope_id: str | None = None,
+        actor: str = _ACTOR,
+        min_content_score: float | None = None,
+        quality_threshold: float | None = None,
+    ) -> MemoryCluster:
+        """Hybrid memory search.
+
+        Embeds `query`, runs vector kNN + graph expansion + composite ranking,
+        and returns a `MemoryCluster`. Audits each retrieval as
+        `event_type='retrieve'` with the query, result count, embedder name,
+        and filter parameters.
+        """
+        if not isinstance(query, str):
+            raise TypeError(f"query must be a string; got {type(query).__name__}")
+        if limit < 0:
+            raise ValueError(f"limit must be non-negative; got {limit}")
+        if kind is not None and kind not in VALID_NODE_KINDS:
+            raise ValueError(
+                f"invalid node kind {kind!r}; expected one of {sorted(VALID_NODE_KINDS)}"
+            )
+        if not actor:
+            raise ValueError("actor must be a non-empty string")
+
+        query_embedding = embedder.embed_text(query)
+
+        retrieve_kwargs: dict[str, Any] = {
+            "limit": limit,
+            "kind": kind,
+            "scope_id": scope_id,
+        }
+        if min_content_score is not None:
+            retrieve_kwargs["min_content_score"] = min_content_score
+        if quality_threshold is not None:
+            retrieve_kwargs["quality_threshold"] = quality_threshold
+
+        cluster = self._hybrid_retrieve(query_embedding, **retrieve_kwargs)
+
+        _audit.log(
+            self._backend.connection,
+            "retrieve",
+            actor,
+            query=query,
+            result_count=len(cluster.nodes),
+            metadata={
+                "limit": limit,
+                "kind": kind,
+                "scope_id": scope_id,
+                "embedder": embedder.name,
+            },
+        )
+
+        return cluster
 
     @staticmethod
     def _coerce_embedding_bytes(embedding: list[float] | bytes) -> bytes:

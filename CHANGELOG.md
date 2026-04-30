@@ -26,6 +26,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `MemoryNode` / `MemoryEdge` dataclasses with `to_row` / `from_row` round-trip and `compute_content_hash`.
 - Cross-cutting integration tests verifying full lifecycle, audit integrity, and cascade semantics.
 
+### Added — Phase 2: Embeddings & Retrieval
+- `EmbeddingProvider` Protocol (`@runtime_checkable`) for pluggable embedding backends.
+- `DeterministicEmbeddingProvider` — hash-seeded, network-free, L2-normalized 384-dim vectors for tests.
+- `HuggingFaceProvider` — HuggingFace Inference API client (`sentence-transformers/all-MiniLM-L6-v2` default, 384-dim), `httpx`-backed, mock-transport-tested in CI.
+- `httpx>=0.27,<1.0` runtime dependency.
+- `Mesh.search_by_vector` — vector kNN primitive over `vec_nodes` with optional `kind` / `scope_id` filters.
+- `Mesh.search` — public hybrid retrieval. Takes a text query plus an `EmbeddingProvider`, runs vector kNN + 1-hop graph expansion + composite ranking (semantic 0.50 / relevance 0.20 / recency 0.10 / importance 0.10 / usage 0.10) + quality gate. Returns a `MemoryCluster`. Audits each retrieval as `event_type='retrieve'` with the query, result count, embedder name, and filter parameters.
+- `MemoryCluster`, `ScoredNode`, `VectorSearchResult` dataclasses for structured retrieval output.
+- Minimal retrieval-quality eval harness (5 golden cases) and a 100-node latency smoke test.
+
 ---
 
 ## [0.0.0] — Project Initialization

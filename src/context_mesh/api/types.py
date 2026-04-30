@@ -295,6 +295,54 @@ class MemoryEdge:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class VectorSearchResult:
+    """One hit from `Mesh.search_by_vector`.
+
+    `distance` uses the metric of the underlying vec0 index (L2 by default in
+    sqlite-vec 0.1.9). Smaller distance = more similar. For unit-normalized
+    embeddings, L2 ordering is monotonic with cosine similarity.
+    """
+
+    node_id: str
+    distance: float
+    node: MemoryNode
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredNode:
+    """One node in a `MemoryCluster`, with composite ranking signals.
+
+    All scores are in the [0, 100] range; `composite_score` is the
+    weighted average of the five signals and drives final ordering.
+    `relevance_score` is edge-derived; it is 0 for direct vector hits
+    that never reached the graph-expansion stage.
+    """
+
+    node: MemoryNode
+    semantic_score: float
+    recency_score: float
+    importance_score: float
+    usage_score: float
+    relevance_score: float
+    composite_score: float
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCluster:
+    """Result of hybrid retrieval. The unit returned to agents.
+
+    `nodes` is sorted by descending `composite_score`. `edges` is the
+    subset of edges whose endpoints are both within `nodes`.
+    `cluster_confidence` is the mean composite score divided by 100,
+    clamped to [0, 1]; it is `None` when the cluster is empty.
+    """
+
+    nodes: list[ScoredNode]
+    edges: list[MemoryEdge]
+    cluster_confidence: float | None
+
+
 __all__ = [
     "EDGE_COLUMNS",
     "NODE_COLUMNS",
@@ -303,7 +351,10 @@ __all__ = [
     "VALID_NODE_KINDS",
     "EdgeCreatedBy",
     "EdgeRelation",
+    "MemoryCluster",
     "MemoryEdge",
     "MemoryNode",
     "NodeKind",
+    "ScoredNode",
+    "VectorSearchResult",
 ]
