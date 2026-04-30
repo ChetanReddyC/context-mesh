@@ -18,6 +18,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Pre-commit hooks: ruff (lint + format) and standard hygiene checks.
 - `CONTRIBUTING.md` extended with local development setup and quality-check workflow.
 
+### Added — Phase 1: Core Memory Operations
+- `Mesh.add` / `Mesh.get` / `Mesh.list_nodes` / `Mesh.update` / `Mesh.delete` — Node CRUD with audit on every mutation.
+- `Mesh.add_edge` / `Mesh.get_edge` / `Mesh.get_edges` / `Mesh.list_edges` / `Mesh.delete_edge` — Edge CRUD with audit.
+- `Mesh.set_vector` / `Mesh.get_vector` / `Mesh.has_vector` / `Mesh.delete_vector` — vector storage with atomic two-table coordination, dimension validation, explicit `replace` semantics, and explicit `vec_nodes` cleanup on node deletion.
+- `Mesh.make_node` and `Mesh.make_edge` — convenience constructors with auto uuid4, timestamps, and content_hash.
+- `MemoryNode` / `MemoryEdge` dataclasses with `to_row` / `from_row` round-trip and `compute_content_hash`.
+- Cross-cutting integration tests verifying full lifecycle, audit integrity, and cascade semantics.
+
 ---
 
 ## [0.0.0] — Project Initialization
