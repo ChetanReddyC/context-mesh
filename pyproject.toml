@@ -1,0 +1,91 @@
+[project]
+name = "context-mesh"
+version = "0.1.0"
+description = "A federated, agent-native, organization-scale memory system for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE.md" }
+authors = [
+    { name = "Chetan Kumar Reddy" },
+]
+keywords = [
+    "agent-memory",
+    "ai-agents",
+    "knowledge-graph",
+    "vector-search",
+    "sqlite",
+    "rag",
+    "llm-tools",
+    "claude",
+    "cursor",
+    "developer-tools",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+dependencies = [
+    "sqlite-vec==0.1.9",
+    "typer>=0.12,<1.0",
+    "structlog>=24.1,<26.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ChetanReddyC/context-mesh"
+Repository = "https://github.com/ChetanReddyC/context-mesh"
+Issues = "https://github.com/ChetanReddyC/context-mesh/issues"
+Documentation = "https://github.com/ChetanReddyC/context-mesh/tree/main/docs"
+
+[project.scripts]
+context-mesh = "context_mesh.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/context_mesh"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF", "SIM", "TC"]
+
+[tool.ruff.format]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["sqlite_vec"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

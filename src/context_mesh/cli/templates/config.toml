@@ -1,0 +1,42 @@
+# context-mesh project configuration.
+# See docs/API_DESIGN.md section 5 for the full reference.
+
+[storage]
+path = ".context-mesh/memory.db"
+backup_dir = ".context-mesh/backups"
+
+[embeddings]
+provider = "huggingface"
+model = "all-MiniLM-L6-v2"
+dimensions = 384
+api_key_env = "HF_API_KEY"
+
+[distillation]
+provider = "claude-cli"
+model = "sonnet"
+fallback_to_heuristic = true
+
+[retrieval]
+default_limit = 5
+quality_threshold = 40
+content_score_threshold = 30
+token_budget = 500
+
+[sync]
+hub_url = ""
+token_env = "CONTEXT_MESH_TOKEN"
+sync_interval_seconds = 600
+auto_pull_on_session_start = true
+
+[scopes]
+default_scope = "private"
+
+[observability]
+log_level = "info"
+log_path = ".context-mesh/log.jsonl"
+metrics_enabled = false
+otel_endpoint = ""
+
+[adapters]
+entire_enabled = false
+agent_memory_enabled = false
