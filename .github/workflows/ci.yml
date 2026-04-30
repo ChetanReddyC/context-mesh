@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: quality-gate (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --all-groups --python ${{ matrix.python-version }}
+
+      - name: Lint (ruff check)
+        run: uv run ruff check src tests
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check src tests
+
+      - name: Type check (mypy --strict)
+        run: uv run mypy
+
+      - name: Tests (pytest)
+        run: uv run pytest -v
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Wheel-install smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv /tmp/wheel-test-venv --python ${{ matrix.python-version }}
+          uv pip install --python /tmp/wheel-test-venv/bin/python dist/*.whl
+          /tmp/wheel-test-venv/bin/context-mesh --version
+          /tmp/wheel-test-venv/bin/context-mesh init /tmp/cm-ci-smoke
+          test -f /tmp/cm-ci-smoke/.context-mesh/memory.db
+          test -f /tmp/cm-ci-smoke/.context-mesh/config.toml
