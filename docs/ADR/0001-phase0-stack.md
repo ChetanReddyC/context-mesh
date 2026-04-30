@@ -129,9 +129,8 @@ Phase 0 is a single coherent change. Splitting across PRs invites partial states
 
 ## References
 
-- `planning/ROADMAP.md` (Phase 0 section) — exit criteria.
-- `docs/SCHEMA.md` — what `0001_initial_schema.sql` (Unit 2) will encode.
-- `CLAUDE.md` (Section 8) — operating principles.
+- `docs/SCHEMA.md` — what `0001_initial_schema.sql` encodes.
+- `CLAUDE.md` (Operating Principles section) — engineering norms.
 - PEP 735 — dependency groups.
 - Astral `uv` documentation — project layout, lockfile semantics.
 - `sqlite-vec` PyPI release notes — pre-1.0 status confirmation.

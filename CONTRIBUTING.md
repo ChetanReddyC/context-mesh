@@ -8,14 +8,11 @@ Thanks for considering a contribution. This project takes quality seriously, so 
 
 Read these in order:
 
-1. `CLAUDE.md` — project context and operating principles.
-2. `README.md` — what the project is.
-3. `VISION.md` — why it exists.
-4. `docs/ARCHITECTURE.md` — how it's structured.
-5. `docs/DESIGN_PRINCIPLES.md` — the values guiding every decision.
-6. `planning/ROADMAP.md` — what's in scope for v1.
+1. `README.md` — what the project is.
+2. `docs/ARCHITECTURE.md` — how it's structured.
+3. `docs/DESIGN_PRINCIPLES.md` — the values guiding every decision.
 
-If your contribution doesn't fit within the current phase of the roadmap, open an issue first to discuss before writing code.
+If your contribution doesn't fit within the project's current direction, open an issue first to discuss before writing code.
 
 ---
 

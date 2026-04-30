@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [0.0.0] — Project Initialization
 
 - Repository created.
-- Documentation framework established under `docs/` and `planning/`.
+- Documentation framework established under `docs/`.
 - `CLAUDE.md` agent onboarding brief written.
 - License (MIT) declared.
 - Contributing guidelines written.

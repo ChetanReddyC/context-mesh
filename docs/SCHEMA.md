@@ -330,14 +330,6 @@ Schema changes follow semver:
 
 ---
 
-## Sample Data
-
-For concrete examples of memory nodes and edges, see:
-- `schemas/memory_node.example.json`
-- `schemas/memory_edge.example.json`
-
----
-
 ## Future Schema Extensions (Deferred)
 
 These are explicitly out of v1 scope but anticipated:

@@ -13,9 +13,21 @@ build/
 .mypy_cache/
 .ruff_cache/
 
+# AI tool local state (Claude Code, Cursor, etc.)
+.claude/
+.cursor/
+.idea/
+.vscode/
+
 # Coverage
 .coverage
 htmlcov/
 
 # context-mesh runtime data
 .context-mesh/
+
+# Private strategy artifacts (kept local, not published)
+VISION.md
+planning/
+schemas/
+examples/

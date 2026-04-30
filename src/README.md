@@ -1,6 +1,6 @@
 # `src/` — Source Code
 
-The Python source for `context-mesh` lives here. As of project initialization, this directory is empty — implementation begins with Phase 0 (see `planning/ROADMAP.md`).
+The Python source for `context-mesh` lives here under the `src/context_mesh/` package. The planned module layout is documented below; some modules land in later phases.
 
 ---
 
@@ -52,7 +52,7 @@ src/
 
 ## Implementation Order
 
-Modules are implemented in roadmap-phase order:
+Modules are implemented in phase order:
 
 1. **Phase 0:** package skeleton + storage interface + sqlite_vec backend.
 2. **Phase 1:** core CRUD on storage.
@@ -63,8 +63,6 @@ Modules are implemented in roadmap-phase order:
 7. **Phase 6:** sync.
 8. **Phase 7:** lifecycle (decay, promotion, supersession).
 9. **Phase 8-9:** polish, release.
-
-See `planning/ROADMAP.md` for details.
 
 ---
 
@@ -77,8 +75,3 @@ All code in this directory follows the standards in `CONTRIBUTING.md`:
 - Tests for every public function.
 - Comments only when WHY is non-obvious.
 
----
-
-## Until Code Exists
-
-This directory is intentionally empty. Implementation begins after Phase 0 planning is approved by the user. No speculative code is committed.

@@ -1,8 +1,6 @@
 # `tests/` — Test Suite
 
-Test infrastructure and test cases live here. As of project initialization, this directory is empty — tests are written alongside implementation, starting with Phase 0.
-
-For the testing strategy, see `planning/TESTING_PLAN.md`.
+Test infrastructure and test cases live here. Tests are written alongside implementation; every phase ships with its own test coverage.
 
 ---
 
@@ -42,7 +40,7 @@ pytest -k "retrieval"                   # tests matching keyword
 
 ## Test Quality Bar
 
-From `planning/TESTING_PLAN.md`:
+Test quality standards:
 
 - No flaky tests.
 - Failures must be specific (point to what broke).
