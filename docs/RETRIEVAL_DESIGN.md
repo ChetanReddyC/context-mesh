@@ -10,7 +10,7 @@ This is the single most important design decision in the system. It is what make
 
 ## Why Active Retrieval
 
-Empirical evidence from the predecessor project (`agent-memory`) and its 22-bug benchmark study:
+Empirical evidence from a 22-bug benchmark study of agent-memory effectiveness:
 
 - **Memory helps when** it gives the agent a keyword or fact it would otherwise have to grep for.
 - **Memory hurts when** it gives the agent a theory it would otherwise have to test from scratch.

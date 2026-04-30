@@ -35,7 +35,6 @@ We chose MIT because:
 - **Maximum permissiveness** — anyone can use, modify, distribute, and embed the project in commercial software.
 - **Compatible with most other licenses** — composes cleanly into mixed-license codebases.
 - **Industry standard** for developer tooling — reduces friction for adoption.
-- **Aligns with Entire's choice** — Entire's CLI is MIT, so an MIT memory layer composes without license tension.
 
 ---
 

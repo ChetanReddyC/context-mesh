@@ -4,9 +4,9 @@ The Python source for `context-mesh` lives here under the `src/context_mesh/` pa
 
 ---
 
-## Planned Module Structure
+## Module Structure
 
-Once implementation begins, the structure will be:
+Modules already shipped (see Phase 0 in `CHANGELOG.md`) are concrete; later modules in this layout land in subsequent phases:
 
 ```
 src/

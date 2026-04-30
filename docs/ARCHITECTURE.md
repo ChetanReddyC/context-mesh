@@ -158,7 +158,7 @@ Pluggable interfaces to source systems.
 
 **Initial adapters:**
 - **Entire CLI adapter** — reads checkpoints from the `entire/checkpoints/v1` git branch, distills them into nodes.
-- **agent-memory adapter** — imports existing memory records from the `agent-memory` predecessor project.
+- **`.agent-memory/` adapter** — imports records from existing `.agent-memory/` directories.
 - **Claude Code adapter** — `UserPromptSubmit` hook for active retrieval; `PostToolUse` hook for memory creation.
 - **Cursor adapter** — extension-based integration.
 - **Generic adapter interface** — any agent tool with tool-use can integrate via the documented protocol.

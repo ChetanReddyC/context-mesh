@@ -52,48 +52,22 @@ Entire's own semantic search operates on raw checkpoint content. `context-mesh` 
 
 A team can use both. They are not competitors; they are layers.
 
-### Composability With Entire's Forthcoming Memory Layer
-
-Entire's public roadmap signals that a memory layer is part of their broader platform direction. When such a layer becomes publicly accessible:
-
-- `context-mesh` can either ingest from it (treating it as an upstream source) or expose to it (treating it as a downstream consumer).
-- The integration adapter will be added once a stable interface is published.
-
-For now, `context-mesh` operates on the Entire **checkpoints** primitive (the open-source, shipped CLI surface).
+`context-mesh` operates on the Entire **checkpoints** primitive (the open-source, shipped CLI surface).
 
 ---
 
-## Integration 2: agent-memory
+## Integration 2: `.agent-memory/` directories
 
-[`agent-memory`](https://github.com/ChetanReddyC/agent-memory) is the predecessor project — a single-repo persistent memory layer. `context-mesh` is its evolution: federated, graph-structured, agent-tool-accessible.
+For users with existing `.agent-memory/` directories (a single-repo persistent memory format), `context-mesh` ships an adapter that imports records into the mesh.
 
 ### Migration Path
 
-For users of `agent-memory`:
-
-1. The `agent-memory` adapter reads existing `.agent-memory/` directories.
-2. Each `agent-memory` record maps to a `context-mesh` node:
-   - The structured fields (decisions, failed_approaches, etc.) carry over directly.
+1. The adapter reads existing `.agent-memory/` directories.
+2. Each record maps to a `context-mesh` node:
+   - Structured fields (decisions, failed_approaches, etc.) carry over directly.
    - The embedding is recomputed in the new system.
    - The session reference is preserved.
-3. After migration, `agent-memory` users can either:
-   - Run `context-mesh` alongside `agent-memory` (both populated, redundant).
-   - Switch fully to `context-mesh` and retire the `agent-memory` install.
-
-### What's Better In `context-mesh`
-
-- Federation across repos.
-- Memory kinds (episodic / semantic / procedural).
-- Active retrieval as tool, not auto-injection.
-- Graph relationships between memories.
-- Privacy scopes.
-
-### What `agent-memory` Did Right (And We Keep)
-
-- The 5-signal scoring algorithm.
-- The distillation pattern (Claude CLI → structured fields).
-- The HuggingFace embedding default.
-- The single-repo simplicity (still the default mode).
+3. After import, the original directory can stay in place (read-only) or be retired.
 
 ---
 
