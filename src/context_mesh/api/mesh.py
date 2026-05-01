@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
+    from context_mesh.config import Config
     from context_mesh.distillation.protocol import Distiller, DistillerCandidate
     from context_mesh.embeddings.protocol import EmbeddingProvider
 
@@ -42,6 +43,13 @@ _NODE_PLACEHOLDERS: Final[str] = ", ".join(["?"] * len(NODE_COLUMNS))
 _INSERT_NODE_SQL: Final[str] = f"INSERT INTO nodes ({_NODE_COL_LIST}) VALUES ({_NODE_PLACEHOLDERS})"
 _SELECT_NODE_BY_ID_SQL: Final[str] = f"SELECT {_NODE_COL_LIST} FROM nodes WHERE id = ?"
 _DELETE_NODE_SQL: Final[str] = "DELETE FROM nodes WHERE id = ?"
+_MARK_USED_SQL: Final[str] = (
+    "UPDATE nodes "
+    "SET usage_count = usage_count + 1, "
+    "helpful_count = helpful_count + ?, "
+    "updated_at = ? "
+    "WHERE id = ?"
+)
 
 _EDGE_COL_LIST: Final[str] = ", ".join(EDGE_COLUMNS)
 _EDGE_PLACEHOLDERS: Final[str] = ", ".join(["?"] * len(EDGE_COLUMNS))
@@ -111,6 +119,8 @@ _SEARCH_BY_VECTOR_OUTER_SELECT: Final[str] = (
 )
 _SEARCH_BY_VECTOR_ORDER_TAIL: Final[str] = " ORDER BY knn.distance LIMIT ?"
 
+_CONTRADICTION_KINDS: Final[frozenset[str]] = frozenset({"semantic", "procedural"})
+
 _DEFAULT_RETRIEVE_LIMIT: Final[int] = 5
 _RETRIEVE_OVERFETCH_FACTOR: Final[int] = 4
 _RETRIEVE_MIN_OVERFETCH: Final[int] = 20
@@ -176,6 +186,19 @@ class Mesh:
     def local(cls, path: str | Path | Literal[":memory:"]) -> Mesh:
         """Open a Mesh backed by a local SQLite file (or `":memory:"`)."""
         return cls(SqliteVecBackend(path))
+
+    @classmethod
+    def from_config(cls, config: Config) -> Mesh:
+        """Build a `Mesh` from a resolved `Config`.
+
+        The database path comes from `config.storage.path`. Federation,
+        embeddings, and other config fields are *not* applied here — this
+        constructor is intentionally narrow. Callers that need them should
+        pass the relevant config sections to the modules that consume them.
+        """
+        from pathlib import Path as _Path
+
+        return cls.local(_Path(config.storage.path))
 
     def close(self) -> None:
         """Close the underlying database connection."""
@@ -872,6 +895,114 @@ class Mesh:
         )
 
         return cluster
+
+    def find_contradictions(
+        self,
+        content: str,
+        *,
+        embedder: EmbeddingProvider,
+        kind: NodeKind = "semantic",
+        limit: int = 5,
+        scope_id: str | None = None,
+        actor: str = _ACTOR,
+    ) -> list[MemoryNode]:
+        """Return memories most semantically similar to `content` within
+        contradiction-prone kinds (`semantic` or `procedural`).
+
+        Embeds `content`, runs a flat vector kNN over `vec_nodes` joined to
+        `nodes`, filtered to `kind` (default `"semantic"`) and optionally
+        `scope_id`. Returns up to `limit` `MemoryNode`s sorted by ascending
+        distance (closest first). Audits each call as
+        `event_type='retrieve'` with `metadata.action='find_contradictions'`.
+
+        This is the v1 implementation: it surfaces *similarity*, not logical
+        contradiction. The returned nodes are the most likely places where
+        a contradiction would occur, ranked by semantic proximity. A future
+        LLM-pass over these results is what would turn similarity into a
+        contradiction verdict.
+        """
+        if not content or not content.strip():
+            raise ValueError("content must not be empty")
+        if kind not in _CONTRADICTION_KINDS:
+            raise ValueError("kind must be 'semantic' or 'procedural'")
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1; got {limit}")
+        if not actor or not actor.strip():
+            raise ValueError("actor must not be empty")
+
+        query_embedding = embedder.embed_text(content)
+        hits = self.search_by_vector(
+            query_embedding,
+            k=limit,
+            kind=kind,
+            scope_id=scope_id,
+        )
+        results = [hit.node for hit in hits]
+
+        _audit.log(
+            self._backend.connection,
+            "retrieve",
+            actor,
+            query=content,
+            result_count=len(results),
+            metadata={
+                "action": "find_contradictions",
+                "kind": kind,
+                "scope_id": scope_id,
+                "limit": limit,
+                "embedder": embedder.name,
+            },
+        )
+
+        return results
+
+    def mark_used(
+        self,
+        node_id: str,
+        helpful: bool,
+        *,
+        notes: str | None = None,
+        actor: str = _ACTOR,
+    ) -> MemoryNode:
+        """Record a usage signal on a node and return the refreshed node.
+
+        Always increments `usage_count` by 1. Increments `helpful_count`
+        by 1 only when `helpful=True`. Stamps `updated_at`. Audits as
+        `event_type='mark_helpful'` if `helpful` else `'mark_unhelpful'`.
+        `notes`, when supplied, lands in the audit row's metadata.
+        """
+        if not node_id or not node_id.strip():
+            raise ValueError("node_id must not be empty")
+        if not actor or not actor.strip():
+            raise ValueError("actor must not be empty")
+        if notes is not None and not isinstance(notes, str):
+            raise TypeError(f"notes must be a string or None; got {type(notes).__name__}")
+
+        helpful_increment = 1 if helpful else 0
+        now = int(time.time())
+
+        conn = self._backend.connection
+        cursor = conn.execute(_MARK_USED_SQL, (helpful_increment, now, node_id))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            raise ValueError(f"node {node_id!r} not found")
+        conn.commit()
+
+        event_type: Literal["mark_helpful", "mark_unhelpful"] = (
+            "mark_helpful" if helpful else "mark_unhelpful"
+        )
+        _audit.log(
+            conn,
+            event_type,
+            actor,
+            node_ids=[node_id],
+            metadata={"notes": notes} if notes else None,
+        )
+
+        refreshed = self.get(node_id)
+        if refreshed is None:
+            raise RuntimeError(f"node {node_id!r} disappeared after mark_used")
+        return refreshed
 
     def distill(
         self,
