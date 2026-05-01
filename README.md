@@ -51,12 +51,18 @@ The real solution is **structured, queryable, federated memory** that the agent 
 
 ## Status
 
-- ✅ Architecture and design committed
-- ✅ Schema, storage, retrieval, and integration designs documented
-- ✅ Phase 0 foundation shipped — SQLite + sqlite-vec storage, migration runner, full v1 schema, structlog + audit, `context-mesh init` CLI
-- 🚧 Phase 1+ in progress — core CRUD, embeddings, retrieval, distillation, federation
+- Architecture and design committed
+- Schema, storage, retrieval, and integration designs documented
+- **Phase 0** — foundation: SQLite + sqlite-vec storage, migration runner, full v1 schema, structlog + audit, `context-mesh init` CLI. Shipped.
+- **Phase 1** — core memory CRUD: `Mesh.add` / `get` / `list_nodes` / `update` / `delete`, edge CRUD, vector storage with two-table coordination. Shipped.
+- **Phase 2** — embeddings & retrieval: pluggable `EmbeddingProvider` Protocol (deterministic + HuggingFace), `Mesh.search` hybrid retrieval (vector kNN + 1-hop graph expansion + composite ranking + quality gate). Shipped.
+- **Phase 3** — distillation: secret redaction, kind classifier, `HeuristicDistiller`, `ClaudeCliDistiller` with heuristic fallback, `Mesh.distill` + intra-session edge inference. Shipped.
+- **Phase 4** — agent surfaces: full developer CLI (`search`, `add`, `show`, `list`, `delete`, `distill`, `stats`, `audit`, `tools`, `serve`, `config`), `Mesh.find_contradictions` / `mark_used` / `from_config`, stdlib HTTP server with bearer-token auth, agent tool schemas (Anthropic / OpenAI / MCP dialects), TOML configuration loader with global+project+env layering. Shipped.
+- Phase 5+ in progress — source adapters, federation, lifecycle management, polish.
 
-See `docs/` for the reference architecture and design rationale.
+See `docs/` for the reference architecture and design rationale; the
+shipped surfaces are documented in `docs/CLI.md`, `docs/HTTP_API.md`, and
+`docs/CONFIG.md`.
 
 ---
 

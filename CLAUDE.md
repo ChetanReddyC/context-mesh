@@ -168,13 +168,22 @@ These are NOT preferences. They are rules every agent working on this project MU
 
 ## 9. Current State
 
-- ✅ Phase 0 foundation: project scaffold, ADR-0001 (20 locked decisions)
-- ✅ Storage: `SqliteVecBackend`, migration runner, full v1 schema (8 tables, 12 indexes, vec0 virtual table)
-- ✅ Observability: structlog with stdlib bridge, `audit.log()` callsite
-- ✅ CLI: `context-mesh init` creates `.context-mesh/memory.db` + `config.toml`
-- ✅ CI: GitHub Actions matrix (Python 3.11/3.12/3.13) + pre-commit hooks
-- 🚧 Phase 1: Core memory CRUD operations on the storage layer
-- ⏳ Future phases: embeddings + retrieval, distillation, agent tools, source adapters, federation, lifecycle management
+Phases 0–4 shipped: foundation, CRUD, embeddings/retrieval, distillation,
+agent surfaces (CLI, HTTP server, tool schemas, config). Phase 5+ in
+progress.
+
+- ✅ Phase 0 foundation: project scaffold, ADR-0001 (20 locked decisions); structlog + audit; CI matrix; pre-commit hooks.
+- ✅ Storage: `SqliteVecBackend`, migration runner, full v1 schema (8 tables, 12 indexes, vec0 virtual table).
+- ✅ Phase 1 — core memory CRUD: `Mesh.add` / `get` / `list_nodes` / `update` / `delete` / edge CRUD / vector storage with two-table coordination, audit on every mutation.
+- ✅ Phase 2 — embeddings & retrieval: `EmbeddingProvider` Protocol, deterministic + HuggingFace providers, `Mesh.search` hybrid retrieval (vector kNN + 1-hop graph expansion + composite ranking + quality gate).
+- ✅ Phase 3 — distillation: 15-category secret redactor, kind classifier, `HeuristicDistiller`, `ClaudeCliDistiller` with heuristic fallback, `Mesh.distill` with intra-session edge inference.
+- ✅ Phase 4 — agent surfaces:
+  - CLI: `init`, `search`, `add`, `show`, `list`, `delete`, `distill`, `stats`, `audit`, `tools`, `serve`, `config`.
+  - Library API gaps: `Mesh.find_contradictions`, `Mesh.mark_used`, `Mesh.from_config`.
+  - HTTP server: stdlib `ThreadingHTTPServer` exposing 6 endpoints with bearer-token auth.
+  - Agent tool schemas: `ANTHROPIC_TOOLS` / `OPENAI_TOOLS` / `MCP_TOOLS`, `tool_for(name, dialect)` lookup.
+  - Configuration: `context_mesh.config.load_config` with defaults / global / project / env layering, three env-var overrides, `ConfigError` on bad values.
+- ⏳ Phase 5+ — source adapters (Entire, agent-memory), federation hub, lifecycle (decay, supersede, promote), polish, release.
 
 ---
 

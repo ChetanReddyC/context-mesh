@@ -90,126 +90,63 @@ Returns a list of nodes that contradict the proposed content. Used proactively b
 
 ## 2. CLI
 
-The `context-mesh` command-line interface.
+The `context-mesh` command-line interface. The full reference for shipped
+commands lives in `docs/CLI.md`; the table below is the short-form summary.
 
-### Setup Commands
-
-```bash
-# Initialize for the current project
-context-mesh init [--global]
-
-# Connect to a team mesh hub
-context-mesh connect <hub-url> [--token <token>]
-
-# Disconnect from a hub
-context-mesh disconnect <hub-url>
-
-# Install integration with an agent tool
-context-mesh install [claude-code | cursor | git-hooks | codex]
-
-# Uninstall an integration
-context-mesh uninstall [claude-code | cursor | git-hooks | codex]
-```
-
-### Distillation Commands
+### Shipped in v1.0
 
 ```bash
-# Distill a single checkpoint or session
-context-mesh distill <checkpoint-id | session-id>
+# Setup
+context-mesh init [<path>] [--global] [--force]
 
-# Distill all unprocessed checkpoints
-context-mesh distill --all
+# Memory CRUD
+context-mesh add <content> --kind <kind> [--headline <h>] [--scope-id <s>] \
+    [--source-session-id <id>] [--source-repo <r>] [--tags <a,b,c>] [--db <path>]
+context-mesh show <node-id> [--json] [--db <path>]
+context-mesh list [--kind <kind>] [--scope-id <s>] [--limit <n>] [--json] [--db <path>]
+context-mesh delete <node-id> [--yes] [--db <path>]
 
-# Re-distill (overwrites existing distillation)
-context-mesh distill --redo <checkpoint-id>
-```
+# Retrieval and distillation
+context-mesh search "<query>" [--kind <kind>] [--scope-id <s>] [--limit <n>] [--json] [--db <path>]
+context-mesh distill <session-file> --scope-id <s> --source-session-id <id> \
+    --source-repo <r> [--actor <a>] [--distiller heuristic|claude-cli] [--db <path>]
 
-### Retrieval Commands
+# Inspection
+context-mesh stats [--db <path>]
+context-mesh audit [--limit <n>] [--actor <a>] [--event-type <e>] [--json] [--db <path>]
 
-```bash
-# Search memories from the CLI (developer-facing)
-context-mesh search "<query>" [--kind <kind>] [--limit <n>]
+# Agent surfaces
+context-mesh tools [--dialect anthropic|openai|mcp] [--out <path>]
+context-mesh serve [--host <h>] [--port <p>] [--db <path>]
 
-# Show full content of a memory
-context-mesh show <node-id>
+# Configuration
+context-mesh config [--global]
+context-mesh config get <section.field> [--global]
+context-mesh config sources [--global]
 
-# List recent memories
-context-mesh list [--kind <kind>] [--repo <repo>] [--limit <n>]
-
-# Show graph of related memories
-context-mesh graph <node-id> [--depth 2]
-```
-
-### Sync Commands
-
-```bash
-# Sync with hub now
-context-mesh sync
-
-# Show sync status
-context-mesh sync status
-
-# Show pending sync items
-context-mesh sync pending
-```
-
-### Memory Management
-
-```bash
-# Add a memory directly (manual)
-context-mesh add --kind <kind> --scope <scope> --tags <tags> "<content>"
-
-# Edit a memory
-context-mesh edit <node-id>
-
-# Promote an episodic to semantic (after a pattern emerges)
-context-mesh promote <node-id> --to semantic
-
-# Mark a memory as superseded
-context-mesh supersede <old-id> --by <new-id>
-
-# Delete a memory (hard delete; rarely needed)
-context-mesh delete <node-id>
-```
-
-### Inspection / Debugging
-
-```bash
-# Show overall stats
-context-mesh stats
-
-# Show audit log
-context-mesh audit [--limit <n>] [--actor <actor>]
-
-# Validate database integrity
-context-mesh doctor
-
-# Export everything to JSON (backup)
-context-mesh export > backup.json
-
-# Import from JSON
-context-mesh import < backup.json
-```
-
-### Configuration
-
-```bash
-# Show current config
-context-mesh config
-
-# Get a specific config value
-context-mesh config get <key>
-
-# Set a config value
-context-mesh config set <key> <value>
-```
-
-### Help
-
-```bash
-context-mesh help [command]
+# Meta
 context-mesh --version
 ```
+
+`--db` resolution order: explicit `--db <path>` ▸ `$CONTEXT_MESH_DB` ▸
+`storage.path` from a merged config file ▸ `./.context-mesh/memory.db`.
+
+### Reserved for v1.x or post-v1
+
+These commands appear in product roadmap but are **not implemented yet** —
+they will land in later phases (federation, lifecycle, polish):
+
+- `context-mesh connect <hub-url> [--token <token>]` — connect to a team hub (Phase 6).
+- `context-mesh disconnect <hub-url>` — disconnect from a hub (Phase 6).
+- `context-mesh sync` / `sync status` / `sync pending` — federation sync (Phase 6).
+- `context-mesh install / uninstall [claude-code | cursor | git-hooks | codex]` — adapter installer (Phase 8).
+- `context-mesh edit <node-id>` — interactive memory editor (Phase 8).
+- `context-mesh promote <node-id> --to semantic` — episodic→semantic promotion (Phase 7).
+- `context-mesh supersede <old-id> --by <new-id>` — mark a memory superseded (Phase 7).
+- `context-mesh doctor` — DB integrity check (Phase 8).
+- `context-mesh export` / `import` — JSON backup/restore (Phase 8).
+- `context-mesh graph <node-id> [--depth 2]` — graph visualization helper (post-v1).
+- `context-mesh config set <key> <value>` — mutating config writer (post-v1; v1 surfaces are read-only).
 
 ---
 
@@ -322,21 +259,32 @@ def my_handler(node):
 
 ## 4. HTTP Protocol (For Generic Adapters)
 
-When `context-mesh` runs as a local daemon (via `context-mesh serve`), it exposes a REST API:
+When `context-mesh` runs as a local daemon (via `context-mesh serve`), it
+exposes a REST API. The server is built on stdlib `http.server`
+(`ThreadingHTTPServer`) — no FastAPI / Flask / aiohttp dependency.
 
 ```
-POST /search          → search_team_memory
-GET  /node/{id}       → drill_down_memory
-POST /node            → add_memory
-POST /feedback        → mark_memory_used
-POST /contradictions  → find_contradictions
+GET  /health           liveness probe
+POST /search           Mesh.search           (search_team_memory)
+GET  /node/{id}        Mesh.get + edges      (drill_down_memory)
+POST /node             Mesh.add              (add_memory)
+POST /feedback         Mesh.mark_used        (mark_memory_used)
+POST /contradictions   Mesh.find_contradictions
 ```
 
-All endpoints accept and return JSON. Authentication is via a local-only token written to `~/.context-mesh/token` on first start.
+All endpoints accept and return JSON. **Every endpoint** (including
+`/health`) requires `Authorization: Bearer <token>`. The token is
+persisted at `~/.context-mesh/token` (mode `0o600` on POSIX); the server
+generates one on first start via `secrets.token_urlsafe(32)`. Default
+bind is `127.0.0.1:7421` (local-only).
 
-The OpenAPI spec is generated automatically and available at `http://localhost:<port>/docs`.
+See `docs/HTTP_API.md` for the full reference (request/response payloads,
+status codes, examples). Auto-generated OpenAPI / `/docs` is **not** part
+of v1 — re-evaluate post-v1 if a generic schema is needed.
 
-This protocol is the integration point for any agent or framework not natively supported.
+This protocol is the integration point for any agent or framework not
+natively supported. The agent tool dispatcher in `docs/integrations/`
+maps each agent-tool call to one of these endpoints.
 
 ---
 
@@ -346,8 +294,8 @@ This protocol is the integration point for any agent or framework not natively s
 
 ```toml
 [storage]
-path = "./.context-mesh/memory.db"
-backup_dir = "./.context-mesh/backups"
+path = ".context-mesh/memory.db"
+backup_dir = ".context-mesh/backups"
 
 [embeddings]
 provider = "huggingface"
@@ -377,7 +325,7 @@ default_scope = "private"
 
 [observability]
 log_level = "info"
-log_path = "./.context-mesh/log.jsonl"
+log_path = ".context-mesh/log.jsonl"
 metrics_enabled = false
 otel_endpoint = ""
 
@@ -386,7 +334,25 @@ entire_enabled = false
 agent_memory_enabled = false
 ```
 
-Global config: `~/.context-mesh/config.toml`. Project-local config: `./.context-mesh/config.toml`. Project-local overrides global.
+**Resolution order** (low precedence ▸ high precedence):
+
+1. Hardcoded defaults (the section dataclass defaults in
+   `context_mesh.config`).
+2. Global config: `~/.context-mesh/config.toml` (if it exists).
+3. Project config: `./.context-mesh/config.toml` (if it exists). Skipped
+   when the loader is invoked with `use_global=True`.
+4. Environment-variable overrides:
+   - `CONTEXT_MESH_DB` → `storage.path`
+   - `CONTEXT_MESH_LOG_LEVEL` → `observability.log_level`
+   - `CONTEXT_MESH_HUB_URL` → `sync.hub_url`
+
+Project-local overrides global; env overrides everything. Unknown sections
+and unknown keys log a warning but do **not** fail the load (forward
+compatibility).
+
+The resolved config is exposed via `context_mesh.config.load_config()`
+(returns an immutable `Config`) and via the `context-mesh config` CLI.
+See `docs/CONFIG.md` for the per-key reference.
 
 ---
 
