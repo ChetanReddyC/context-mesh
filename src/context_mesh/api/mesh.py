@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import math
+import sqlite3
 import struct
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from context_mesh import _audit
+from context_mesh.adapters.sync import SkipRecord, SyncResult
 from context_mesh.api.types import (
     EDGE_COLUMNS,
     NODE_COLUMNS,
@@ -28,10 +31,12 @@ from context_mesh.api.types import (
 from context_mesh.storage import SqliteVecBackend
 
 if TYPE_CHECKING:
-    import sqlite3
+    from collections.abc import Mapping
     from pathlib import Path
     from types import TracebackType
 
+    from context_mesh.adapters import SessionReference, SyncState
+    from context_mesh.adapters.protocol import SourceAdapter
     from context_mesh.config import Config
     from context_mesh.distillation.protocol import Distiller, DistillerCandidate
     from context_mesh.embeddings.protocol import EmbeddingProvider
@@ -144,6 +149,16 @@ _GRAPH_RELATIONS: Final[frozenset[str]] = frozenset(
 
 _DISTILL_INFER_EDGE_CAP: Final[int] = 16
 _DISTILL_INFERRED_EDGE_CONFIDENCE: Final[float] = 0.5
+
+_SELECT_SYNC_STATE_SQL: Final[str] = (
+    "SELECT cursor, last_synced_at, state_json FROM adapter_sync_state WHERE adapter_name = ?"
+)
+_UPSERT_SYNC_STATE_SQL: Final[str] = (
+    "INSERT INTO adapter_sync_state (adapter_name, cursor, last_synced_at, state_json) "
+    "VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(adapter_name) DO UPDATE SET "
+    "cursor=excluded.cursor, last_synced_at=excluded.last_synced_at, state_json=excluded.state_json"
+)
 
 
 def _distill_tuple_to_list(t: tuple[str, ...]) -> list[str] | None:
@@ -1160,6 +1175,219 @@ class Mesh:
                 if len(pairs) >= _DISTILL_INFER_EDGE_CAP:
                     return pairs
         return pairs
+
+    def get_sync_state(self, adapter_name: str) -> SyncState | None:
+        """Read persisted sync state for `adapter_name`. Returns None if absent.
+
+        Reads do not emit audit events (matches `Mesh.get` precedent).
+        Raises `RuntimeError` if the persisted `state_json` is corrupt.
+        """
+        if not adapter_name or not adapter_name.strip():
+            raise ValueError("adapter_name must be a non-empty string")
+        row = self._backend.connection.execute(_SELECT_SYNC_STATE_SQL, (adapter_name,)).fetchone()
+        if row is None:
+            return None
+        cursor, last_synced_at, state_json = row
+        try:
+            state = json.loads(state_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"adapter_sync_state.state_json for {adapter_name!r} is not valid JSON"
+            ) from exc
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"adapter_sync_state.state_json for {adapter_name!r} is not a JSON object"
+            )
+        from context_mesh.adapters import SyncState as _SyncState
+
+        return _SyncState(
+            adapter_name=adapter_name,
+            cursor=cursor,
+            last_synced_at=last_synced_at,
+            state=state,
+        )
+
+    def set_sync_state(
+        self,
+        adapter_name: str,
+        *,
+        cursor: str,
+        state: Mapping[str, Any],
+    ) -> SyncState:
+        """Upsert sync state for `adapter_name`. Stamps `last_synced_at` to now.
+
+        Audits as `event_type='sync_pull'` with metadata: adapter, cursor,
+        sorted state keys (state values are NOT recorded in audit metadata).
+        """
+        if not adapter_name or not adapter_name.strip():
+            raise ValueError("adapter_name must be a non-empty string")
+        if not isinstance(cursor, str):
+            raise ValueError("cursor must be a string")
+        if state is None:
+            raise ValueError("state must be a Mapping, not None")
+        try:
+            state_json = json.dumps(dict(state), sort_keys=True)
+        except TypeError as exc:
+            raise ValueError(f"state is not JSON-serializable: {exc}") from exc
+        now = int(time.time())
+        conn = self._backend.connection
+        conn.execute(_UPSERT_SYNC_STATE_SQL, (adapter_name, cursor, now, state_json))
+        conn.commit()
+        _audit.log(
+            conn,
+            "sync_pull",
+            _ACTOR,
+            metadata={
+                "action": "set_sync_state",
+                "adapter": adapter_name,
+                "cursor": cursor,
+                "state_keys": sorted(state.keys()),
+            },
+        )
+        refreshed = self.get_sync_state(adapter_name)
+        if refreshed is None:  # pragma: no cover — defensive; upsert succeeded
+            raise RuntimeError(
+                f"set_sync_state: post-upsert read returned None for {adapter_name!r}"
+            )
+        return refreshed
+
+    def _ensure_scope_row(self, conn: sqlite3.Connection, scope_id: str) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO scopes (id, name, level, created_at) VALUES (?, ?, ?, ?)",
+            (scope_id, scope_id, "team", int(time.time())),
+        )
+
+    def _ensure_session_row(self, conn: sqlite3.Connection, ref: SessionReference) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, repo, agent, started_at) VALUES (?, ?, ?, ?)",
+            (ref.source_id, ref.repo, ref.agent, ref.started_at),
+        )
+
+    def sync(
+        self,
+        *,
+        adapter: SourceAdapter,
+        distiller: Distiller,
+        embedder: EmbeddingProvider,
+        limit: int = 100,
+        dry_run: bool = False,
+        actor: str = "mesh:sync",
+    ) -> SyncResult:
+        """Run one sync pass for `adapter`, distilling new sessions into memory.
+
+        `embedder` is reserved for future per-sync embedding policies; it is
+        accepted here for API stability but not currently threaded into the
+        distillation engine.
+        """
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        del embedder  # reserved for future use; silence unused-arg lint
+        t0 = time.perf_counter()
+        skipped: list[SkipRecord] = []
+        processed_refs: list[SessionReference] = []
+        total_nodes = 0
+
+        references = list(adapter.discover())
+        discovered = len(references)
+        references = references[:limit]
+
+        if dry_run:
+            existing = adapter.sync_state()
+            cursor = existing.cursor if existing is not None else ""
+            keys_count = 0
+            if existing is not None:
+                keys_count = sum(len(v) for v in existing.state.values() if isinstance(v, list))
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            return SyncResult(
+                adapter_name=adapter.name,
+                discovered=discovered,
+                fetched=0,
+                memory_nodes_added=0,
+                skipped=(),
+                cursor=cursor,
+                state_keys_count=keys_count,
+                elapsed_ms=elapsed_ms,
+                dry_run=True,
+            )
+
+        existing_state = adapter.sync_state()
+        conn = self._backend.connection
+        for ref in references:
+            try:
+                transcript = adapter.fetch(ref)
+            except Exception as exc:
+                skipped.append(SkipRecord(source_id=ref.source_id, stage="fetch", reason=repr(exc)))
+                continue
+            try:
+                self._ensure_scope_row(conn, "default")
+                self._ensure_session_row(conn, ref)
+                conn.commit()
+            except Exception as exc:
+                skipped.append(
+                    SkipRecord(source_id=ref.source_id, stage="persist", reason=repr(exc))
+                )
+                continue
+            try:
+                nodes = self.distill(
+                    transcript.text,
+                    distiller=distiller,
+                    scope_id="default",
+                    source_session_id=ref.source_id,
+                    source_repo=ref.repo,
+                    actor=actor,
+                )
+            except sqlite3.IntegrityError as exc:
+                skipped.append(
+                    SkipRecord(
+                        source_id=ref.source_id,
+                        stage="distill",
+                        reason=f"duplicate content_hash: {exc}",
+                    )
+                )
+                continue
+            except Exception as exc:
+                skipped.append(
+                    SkipRecord(source_id=ref.source_id, stage="distill", reason=repr(exc))
+                )
+                continue
+            total_nodes += len(nodes)
+            processed_refs.append(ref)
+
+        cursor, new_state = adapter.merge_state(existing_state, processed_refs)
+
+        state_keys_count = sum(len(v) for v in new_state.values() if isinstance(v, list))
+        if processed_refs:
+            self.set_sync_state(adapter.name, cursor=cursor, state=new_state)
+
+        fetched = len(processed_refs)
+        _audit.log(
+            conn,
+            "sync_pull",
+            actor,
+            metadata={
+                "action": "sync_run",
+                "adapter": adapter.name,
+                "discovered": discovered,
+                "fetched": fetched,
+                "memory_nodes_added": total_nodes,
+                "skipped_count": len(skipped),
+                "limit": limit,
+                "dry_run": False,
+            },
+        )
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        return SyncResult(
+            adapter_name=adapter.name,
+            discovered=discovered,
+            fetched=fetched,
+            memory_nodes_added=total_nodes,
+            skipped=tuple(skipped),
+            cursor=cursor,
+            state_keys_count=state_keys_count,
+            elapsed_ms=elapsed_ms,
+            dry_run=False,
+        )
 
     @staticmethod
     def _coerce_embedding_bytes(embedding: list[float] | bytes) -> bytes:

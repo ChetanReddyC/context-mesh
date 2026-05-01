@@ -8,6 +8,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added — Phase 5: Source Adapters
+- End-to-end source-adapter system: pluggable `SourceAdapter` Protocol, two built-in adapters (`AgentMemoryAdapter`, `EntireAdapter`), durable per-adapter sync state, a `Mesh.sync` orchestrator with cursor + seen-set idempotency, and a `context-mesh sync <adapter>` CLI surface with `--dry-run` / `--json` modes.
+
+### Added — Phase 5 Unit 1: Adapter protocol + sync-state storage
+- `context_mesh.adapters.protocol` — `SourceAdapter` `@runtime_checkable` Protocol with seven members (`name`, `discover`, `fetch`, `sync_state`, `set_sync_state`, `seen_key`, `merge_state`) and three frozen-dataclass primitives (`SessionReference`, `SessionTranscript`, `SyncState`).
+- `context_mesh.adapters.registry` — process-local `register_adapter` / `get_adapter` / `list_adapters` plus typed `AdapterAlreadyRegisteredError` / `AdapterNotRegisteredError`.
+- Migration `0002_adapter_sync_state.sql` — one row per adapter (`adapter_name` PK, `cursor` TEXT, `last_synced_at` INTEGER, `state_json` JSON-as-TEXT). `Mesh.get_sync_state` and `Mesh.set_sync_state` round-trip the row, server-stamp `last_synced_at`, validate `state_json` is a JSON object on read, and audit each upsert as `event_type='sync_pull'` with sorted state-key metadata (state values are never recorded).
+
+### Added — Phase 5 Unit 2: AgentMemoryAdapter
+- `AgentMemoryAdapter` — reads `.md` session transcripts from a repo's `.agent-memory/` directory. Strict frontmatter parser (required `session_id` / `agent` / `started_at`; optional `ended_at`, `turn_count`, `token_usage`, `repo`, `branch`, `commit_sha`, `tags`); ISO-8601-or-epoch coercion for time fields; deterministic, sorted iteration over the directory tree.
+- Idempotency via the SHA-256 content hash of each file (`seen_key`); persisted set lives in `state["seen_hashes"]` (sorted JSON array). Cursor is the ISO-8601 UTC timestamp of the last `merge_state` call. Skips and warnings are emitted as structured events (`agent_memory_dir_missing`, `empty_file`, `non_utf8`, `malformed_frontmatter`, `duplicate_content`); the run never aborts on a single bad file.
+
+### Added — Phase 5 Unit 3: EntireAdapter
+- `EntireAdapter` — reads checkpoint commits from a git branch (default `entire/checkpoints/v1`), parsing each commit's message body as a JSON object (required `session_id` / `agent` / `started_at`; optional `ended_at`, `repo`, `branch`, `commit_sha`, `turn_count`, `token_usage`, `file_changes`, `transcript`). Walks the branch in `git log --reverse` order; per-call `git -C <repo>` shells out (no porcelain assumptions, configurable `git_binary` and `timeout_seconds`).
+- Idempotency via the commit SHA (`seen_key`); persisted set lives in `state["seen_shas"]` (sorted JSON array). Cursor is the SHA of the last successfully processed commit; each subsequent run walks `<cursor>..<branch>` when reachable. Force-push recovery: if the cursor SHA is no longer reachable on the branch, the adapter logs `entire_cursor_unreachable` and falls back to walking the full branch — the seen-set still suppresses duplicate work. Per-commit warnings (`malformed_checkpoint`, `non_utf8_commit_message`, `entire_show_failed`, `entire_branch_missing`, `entire_log_decode_failed`) skip the bad commit without aborting.
+
+### Added — Phase 5 Unit 4: Sync orchestrator + `context-mesh sync` CLI
+- `Mesh.sync(*, adapter, distiller, embedder, limit=100, dry_run=False, actor='mesh:sync')` — single-pass orchestrator: `adapter.discover()` ▸ slice to `limit` ▸ for each ref `fetch` ▸ `_ensure_scope_row("default")` ▸ `_ensure_session_row(ref)` ▸ `Mesh.distill` ▸ record on success; then `adapter.merge_state(existing, processed)` ▸ `Mesh.set_sync_state` (only when at least one ref was processed) ▸ emit a single summary `sync_pull` audit row. Returns a `SyncResult` (`adapter_name`, `discovered`, `fetched`, `memory_nodes_added`, `skipped: tuple[SkipRecord, ...]`, `cursor`, `state_keys_count`, `elapsed_ms`, `dry_run`). Skips are tagged `stage='fetch'|'distill'|'persist'`; duplicate-`content_hash` distill failures are caught and reported as `stage='distill'` skips.
+- `dry_run=True` calls `discover()` only, reports the existing cursor/state-keys count, leaves audit untouched, and emits no state writes.
+- `context-mesh sync <adapter> [--repo <path>] [--branch <name>] [--limit <n>] [--dry-run] [--distiller heuristic|claude-cli] [--json] [--db <path>]` CLI: constructs the requested adapter (`agent-memory` or `entire`) against `--repo` (default cwd), runs `Mesh.sync`, and emits a deterministic text summary (default) or JSON object (`--json`). Dry-run JSON adds a `would_ingest` array of `(source_id, repo, agent)` triples.
+
+### Added — Phase 5 Unit 5: Documentation + demo
+- `docs/ADAPTERS.md` — full reference: Protocol contract, lifecycle invariants, per-adapter contracts (frontmatter grammar, commit JSON schema, error events, cursor mechanics, force-push recovery), sync-state shape, orchestrator semantics, CLI flag table, idempotency proof, custom-adapter walkthrough.
+- `docs/INTEGRATION.md` — sections 1 (Entire) and 2 (`.agent-memory/`) rewritten to match shipped behavior (JSON schema, frontmatter grammar, cursor + seen-set mechanism, force-push recovery); each ends with a `docs/ADAPTERS.md` pointer.
+- `docs/EXTENSIBILITY.md` — section 4 rewritten with the shipped 7-method Protocol, v1 built-in list (`AgentMemoryAdapter`, `EntireAdapter`), reserved-for-v1.x sub-list, and a complete custom-adapter skeleton.
+- `docs/API_DESIGN.md` — `context-mesh sync` added under a new "Source adapters" sub-block in the shipped CLI list; outdated `entire.sync()` / `am_adapter.import_directory()` examples replaced with `Mesh.sync(adapter=..., ...)`; pointer to `docs/ADAPTERS.md`.
+- `docs/CLI.md` — new flat-reference section for `context-mesh sync <adapter>`.
+- `docs/CONFIG.md` — `[adapters]` section clarifies that `entire_enabled` / `agent_memory_enabled` are not yet consulted by `Mesh.sync` in v1.
+- `docs/SCHEMA.md` — new section "7. Adapter Sync State" plus the `adapter_sync_state` DDL block.
+- `README.md` — Phase 5 line marked shipped; doc-pointer paragraph extended to `docs/ADAPTERS.md`.
+- `CLAUDE.md` — section 9 updated to reflect Phase 5 completion.
+- `demo_phase5.py` — end-to-end script: builds a temp git repo, seeds an `.agent-memory/` file and an Entire-style checkpoint commit, runs both adapters via `Mesh.sync`, proves idempotency on rerun, exercises the `context-mesh sync` CLI in `--dry-run` and real modes, and prints final mesh stats + sync-state cursors + `sync_pull` audit count.
+
 ### Added — Phase 0: Foundation
 - `pyproject.toml` with src-layout, `uv`-managed deps, ruff/mypy/pytest config (ADR-0001).
 - ADR-0001 documenting 20 locked Phase 0 decisions.

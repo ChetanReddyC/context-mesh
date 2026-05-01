@@ -168,12 +168,12 @@ These are NOT preferences. They are rules every agent working on this project MU
 
 ## 9. Current State
 
-Phases 0–4 shipped: foundation, CRUD, embeddings/retrieval, distillation,
-agent surfaces (CLI, HTTP server, tool schemas, config). Phase 5+ in
-progress.
+Phases 0–5 shipped: foundation, CRUD, embeddings/retrieval, distillation,
+agent surfaces (CLI, HTTP server, tool schemas, config), and source
+adapters with sync orchestrator. Phase 6+ in progress.
 
 - ✅ Phase 0 foundation: project scaffold, ADR-0001 (20 locked decisions); structlog + audit; CI matrix; pre-commit hooks.
-- ✅ Storage: `SqliteVecBackend`, migration runner, full v1 schema (8 tables, 12 indexes, vec0 virtual table).
+- ✅ Storage: `SqliteVecBackend`, migration runner, full v1 schema (now 9 tables including `adapter_sync_state`, plus vec0 virtual table).
 - ✅ Phase 1 — core memory CRUD: `Mesh.add` / `get` / `list_nodes` / `update` / `delete` / edge CRUD / vector storage with two-table coordination, audit on every mutation.
 - ✅ Phase 2 — embeddings & retrieval: `EmbeddingProvider` Protocol, deterministic + HuggingFace providers, `Mesh.search` hybrid retrieval (vector kNN + 1-hop graph expansion + composite ranking + quality gate).
 - ✅ Phase 3 — distillation: 15-category secret redactor, kind classifier, `HeuristicDistiller`, `ClaudeCliDistiller` with heuristic fallback, `Mesh.distill` with intra-session edge inference.
@@ -183,7 +183,14 @@ progress.
   - HTTP server: stdlib `ThreadingHTTPServer` exposing 6 endpoints with bearer-token auth.
   - Agent tool schemas: `ANTHROPIC_TOOLS` / `OPENAI_TOOLS` / `MCP_TOOLS`, `tool_for(name, dialect)` lookup.
   - Configuration: `context_mesh.config.load_config` with defaults / global / project / env layering, three env-var overrides, `ConfigError` on bad values.
-- ⏳ Phase 5+ — source adapters (Entire, agent-memory), federation hub, lifecycle (decay, supersede, promote), polish, release.
+- ✅ Phase 5 — source adapters:
+  - `SourceAdapter` Protocol (7 members), `SessionReference` / `SessionTranscript` / `SyncState` dataclasses, process-local registry.
+  - `adapter_sync_state` table (migration 0002), `Mesh.get_sync_state` / `Mesh.set_sync_state`.
+  - `AgentMemoryAdapter` — `.agent-memory/` markdown frontmatter, content-hash seen-set.
+  - `EntireAdapter` — `entire/checkpoints/v1` git branch, JSON commit-message payloads, force-push recovery.
+  - `Mesh.sync` orchestrator: discover ▸ fetch ▸ distill ▸ persist; `SyncResult` + `SkipRecord(stage)`; dry-run; `sync_pull` audit.
+  - `context-mesh sync <adapter>` CLI with `--repo` / `--branch` / `--limit` / `--dry-run` / `--distiller` / `--json` / `--db`.
+- ⏳ Phase 6+ — federation hub, lifecycle (decay, supersede, promote), polish, release.
 
 ---
 

@@ -119,6 +119,10 @@ context-mesh audit [--limit <n>] [--actor <a>] [--event-type <e>] [--json] [--db
 context-mesh tools [--dialect anthropic|openai|mcp] [--out <path>]
 context-mesh serve [--host <h>] [--port <p>] [--db <path>]
 
+# Source adapters
+context-mesh sync <adapter> [--repo <path>] [--branch <name>] [--limit <n>] \
+    [--dry-run] [--distiller heuristic|claude-cli] [--json] [--db <path>]
+
 # Configuration
 context-mesh config [--global]
 context-mesh config get <section.field> [--global]
@@ -136,9 +140,9 @@ context-mesh --version
 These commands appear in product roadmap but are **not implemented yet** —
 they will land in later phases (federation, lifecycle, polish):
 
-- `context-mesh connect <hub-url> [--token <token>]` — connect to a team hub (Phase 6).
-- `context-mesh disconnect <hub-url>` — disconnect from a hub (Phase 6).
-- `context-mesh sync` / `sync status` / `sync pending` — federation sync (Phase 6).
+- `context-mesh connect <hub-url> [--token <token>]` — connect to a team hub (Phase 6, federation).
+- `context-mesh disconnect <hub-url>` — disconnect from a hub (Phase 6, federation).
+- `context-mesh sync status` / `sync pending` — federation hub status (Phase 6, federation). Distinct from the shipped `context-mesh sync <adapter>` source-adapter command.
 - `context-mesh install / uninstall [claude-code | cursor | git-hooks | codex]` — adapter installer (Phase 8).
 - `context-mesh edit <node-id>` — interactive memory editor (Phase 8).
 - `context-mesh promote <node-id> --to semantic` — episodic→semantic promotion (Phase 7).
@@ -233,16 +237,29 @@ nodes_created = distiller.distill_session(
 ### Adapters
 
 ```python
-from context_mesh.adapters import EntireAdapter, AgentMemoryAdapter
+from context_mesh.adapters import AgentMemoryAdapter, EntireAdapter
+from context_mesh.distillation import HeuristicDistiller
+from context_mesh.embeddings import DeterministicEmbeddingProvider
+
+distiller = HeuristicDistiller()
+embedder = DeterministicEmbeddingProvider()
 
 # Pull from Entire checkpoints branch
-entire = EntireAdapter(mesh=mesh, repo_path="./payments")
-new_nodes = entire.sync()
+entire = EntireAdapter(mesh, repo_path="./payments")
+result = mesh.sync(adapter=entire, distiller=distiller, embedder=embedder)
 
-# Migrate from existing agent-memory installation
-am_adapter = AgentMemoryAdapter(mesh=mesh)
-migrated = am_adapter.import_directory("./.agent-memory")
+# Pull from a `.agent-memory/` directory
+am_adapter = AgentMemoryAdapter(mesh, repo_path="./payments")
+result = mesh.sync(adapter=am_adapter, distiller=distiller, embedder=embedder)
 ```
+
+Both built-in adapters are read-only over their source. The orchestrator
+is `Mesh.sync(adapter=..., distiller=..., embedder=..., limit=100,
+dry_run=False, actor="mesh:sync")`; durable per-adapter state
+(cursor + seen-set) is read and written through `Mesh.get_sync_state`
+and `Mesh.set_sync_state`. See `docs/ADAPTERS.md` for the full
+contract, JSON schemas, idempotency model, and instructions for writing
+custom adapters.
 
 ### Hooks
 

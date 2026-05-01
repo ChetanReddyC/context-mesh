@@ -66,28 +66,31 @@ def test_apply_migrations_creates_schema_version_table(
     rows = in_memory_db.execute(
         "SELECT version, name FROM schema_version ORDER BY version"
     ).fetchall()
-    assert rows == [(1, "0001_initial_schema")]
+    assert rows == [
+        (1, "0001_initial_schema"),
+        (2, "0002_adapter_sync_state"),
+    ]
 
 
 def test_apply_migrations_records_initial_migration(
     in_memory_db: sqlite3.Connection,
 ) -> None:
     applied = apply_migrations(in_memory_db)
-    assert len(applied) == 1
-    record = applied[0]
-    assert record.version == 1
-    assert record.name == "0001_initial_schema"
-    assert isinstance(record.applied_at, int)
-    assert record.applied_at > 0
+    assert [m.version for m in applied] == [1, 2]
+    initial = applied[0]
+    assert initial.version == 1
+    assert initial.name == "0001_initial_schema"
+    assert isinstance(initial.applied_at, int)
+    assert initial.applied_at > 0
 
 
 def test_apply_migrations_is_idempotent(in_memory_db: sqlite3.Connection) -> None:
     first = apply_migrations(in_memory_db)
     second = apply_migrations(in_memory_db)
-    assert len(first) == 1
+    assert len(first) == 2
     assert second == []
     count = in_memory_db.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    assert count == 1
+    assert count == 2
 
 
 @pytest.mark.parametrize(

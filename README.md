@@ -58,11 +58,12 @@ The real solution is **structured, queryable, federated memory** that the agent 
 - **Phase 2** — embeddings & retrieval: pluggable `EmbeddingProvider` Protocol (deterministic + HuggingFace), `Mesh.search` hybrid retrieval (vector kNN + 1-hop graph expansion + composite ranking + quality gate). Shipped.
 - **Phase 3** — distillation: secret redaction, kind classifier, `HeuristicDistiller`, `ClaudeCliDistiller` with heuristic fallback, `Mesh.distill` + intra-session edge inference. Shipped.
 - **Phase 4** — agent surfaces: full developer CLI (`search`, `add`, `show`, `list`, `delete`, `distill`, `stats`, `audit`, `tools`, `serve`, `config`), `Mesh.find_contradictions` / `mark_used` / `from_config`, stdlib HTTP server with bearer-token auth, agent tool schemas (Anthropic / OpenAI / MCP dialects), TOML configuration loader with global+project+env layering. Shipped.
-- Phase 5+ in progress — source adapters, federation, lifecycle management, polish.
+- **Phase 5** — source adapters: `SourceAdapter` Protocol, `AgentMemoryAdapter` (`.agent-memory/` markdown), `EntireAdapter` (git-branch JSON checkpoints), `Mesh.sync` orchestrator with cursor + seen-set idempotency, `context-mesh sync <adapter>` CLI with `--dry-run` / `--json`. Shipped.
+- Phase 6+ in progress — federation hub, lifecycle management, polish.
 
 See `docs/` for the reference architecture and design rationale; the
-shipped surfaces are documented in `docs/CLI.md`, `docs/HTTP_API.md`, and
-`docs/CONFIG.md`.
+shipped surfaces are documented in `docs/CLI.md`, `docs/HTTP_API.md`,
+`docs/CONFIG.md`, and `docs/ADAPTERS.md`.
 
 ---
 

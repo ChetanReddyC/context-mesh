@@ -20,6 +20,7 @@ import typer
 from context_mesh import __version__
 from context_mesh._audit import log as audit_log
 from context_mesh._logging import configure_logging, get_logger
+from context_mesh.adapters import AgentMemoryAdapter, EntireAdapter, SourceAdapter
 from context_mesh.api import Mesh
 from context_mesh.api.types import (
     VALID_NODE_KINDS,
@@ -42,6 +43,8 @@ from context_mesh.storage import SqliteVecBackend
 if TYPE_CHECKING:
     import sqlite3
 
+    from context_mesh.adapters import SessionReference
+    from context_mesh.adapters.sync import SyncResult
     from context_mesh.distillation.protocol import Distiller
 
 app = typer.Typer(
@@ -636,17 +639,7 @@ def distill(
     configure_logging(json_output=False)
     get_logger("context_mesh.cli")
 
-    distiller: Distiller
-    if distiller_name == "heuristic":
-        distiller = HeuristicDistiller()
-    elif distiller_name == "claude-cli":
-        distiller = ClaudeCliDistiller()
-    else:
-        typer.echo(
-            f"error: unknown distiller {distiller_name!r}; expected 'heuristic' or 'claude-cli'",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    distiller = _construct_distiller(distiller_name)
 
     session_text = session_file.read_text(encoding="utf-8")
 
@@ -998,6 +991,155 @@ def serve(
     except KeyboardInterrupt:
         logger.info("serve_keyboard_interrupt")
         server.stop()
+
+
+def _construct_distiller(name: str) -> Distiller:
+    if name == "heuristic":
+        return HeuristicDistiller()
+    if name == "claude-cli":
+        return ClaudeCliDistiller()
+    typer.echo(
+        f"error: unknown distiller {name!r}; expected 'heuristic' or 'claude-cli'",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _construct_adapter(
+    name: str,
+    mesh: Mesh,
+    repo: Path,
+    *,
+    branch: str,
+) -> SourceAdapter:
+    if name == "agent-memory":
+        return AgentMemoryAdapter(mesh, repo)
+    if name == "entire":
+        return EntireAdapter(mesh, repo, branch=branch)
+    typer.echo(
+        f"error: unknown adapter {name!r}; expected 'agent-memory' or 'entire'",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _emit_sync_text(result: SyncResult, *, would_ingest: list[SessionReference] | None) -> None:
+    if result.dry_run:
+        refs = would_ingest or []
+        if not refs:
+            typer.echo(f"adapter: {result.adapter_name} (dry-run)")
+            typer.echo("would ingest: 0 reference(s)")
+            return
+        typer.echo(f"adapter: {result.adapter_name} (dry-run)")
+        typer.echo(f"would ingest: {len(refs)} reference(s)")
+        for ref in refs:
+            typer.echo(f"  {ref.source_id}  repo={ref.repo}  agent={ref.agent}")
+        return
+
+    typer.echo(f"adapter: {result.adapter_name}")
+    typer.echo(f"discovered:         {result.discovered}")
+    typer.echo(f"fetched:            {result.fetched}")
+    typer.echo(f"memory_nodes_added: {result.memory_nodes_added}")
+    typer.echo(f"skipped:            {len(result.skipped)}")
+    for skip in result.skipped:
+        typer.echo(f"  - {skip.source_id} [{skip.stage}] {skip.reason}")
+    typer.echo(f"cursor:             {result.cursor}")
+    typer.echo(f"state_keys_count:   {result.state_keys_count}")
+    typer.echo(f"elapsed_ms:         {result.elapsed_ms}")
+
+
+def _emit_sync_json(result: SyncResult, *, would_ingest: list[SessionReference] | None) -> None:
+    payload: dict[str, Any] = {
+        "adapter_name": result.adapter_name,
+        "discovered": result.discovered,
+        "fetched": result.fetched,
+        "memory_nodes_added": result.memory_nodes_added,
+        "skipped": [
+            {"source_id": s.source_id, "stage": s.stage, "reason": s.reason} for s in result.skipped
+        ],
+        "cursor": result.cursor,
+        "state_keys_count": result.state_keys_count,
+        "elapsed_ms": result.elapsed_ms,
+        "dry_run": result.dry_run,
+    }
+    if result.dry_run:
+        refs = would_ingest or []
+        payload["would_ingest"] = [
+            {"source_id": r.source_id, "repo": r.repo, "agent": r.agent} for r in refs
+        ]
+    typer.echo(_dump_json(payload))
+
+
+@app.command("sync")
+def sync_cmd(
+    adapter_name: Annotated[
+        str,
+        typer.Argument(help="Adapter to run: 'agent-memory' or 'entire'.", metavar="ADAPTER"),
+    ],
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", help="Directory the adapter operates on. Default: cwd."),
+    ] = None,
+    branch: Annotated[
+        str,
+        typer.Option("--branch", help="Git branch (entire adapter only)."),
+    ] = "entire/checkpoints/v1",
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=10_000, help="Max references to process."),
+    ] = 100,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Discover-only; do not fetch or persist."),
+    ] = False,
+    distiller_name: Annotated[
+        str,
+        typer.Option("--distiller", help="Distiller backend: heuristic or claude-cli."),
+    ] = "heuristic",
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit JSON summary."),
+    ] = False,
+    db: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to memory.db."),
+    ] = None,
+) -> None:
+    """Run one sync pass for ADAPTER, distilling new sessions into memory."""
+    configure_logging(json_output=False)
+    get_logger("context_mesh.cli")
+
+    repo_resolved = (repo or Path.cwd()).resolve()
+    if not repo_resolved.is_dir():
+        typer.echo(
+            f"error: --repo path not found or not a directory: {repo_resolved}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    db_path = _resolve_db_path(db)
+    mesh = Mesh.local(db_path)
+    would_ingest: list[SessionReference] | None = None
+    try:
+        adapter = _construct_adapter(adapter_name, mesh, repo_resolved, branch=branch)
+        distiller = _construct_distiller(distiller_name)
+        embedder = DeterministicEmbeddingProvider()
+        if dry_run:
+            would_ingest = list(adapter.discover())[:limit]
+        result = mesh.sync(
+            adapter=adapter,
+            distiller=distiller,
+            embedder=embedder,
+            limit=limit,
+            dry_run=dry_run,
+            actor="cli:sync",
+        )
+    finally:
+        mesh.close()
+
+    if json_output:
+        _emit_sync_json(result, would_ingest=would_ingest)
+    else:
+        _emit_sync_text(result, would_ingest=would_ingest)
 
 
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:

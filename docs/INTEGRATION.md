@@ -20,28 +20,37 @@ Three principles drive integration design:
 
 ### What We Read
 
-For each Entire checkpoint:
-- The session transcript (prompts, responses, tool calls).
-- The agent identifier (`claude-code`, `cursor`, etc.).
-- File modifications (paths, diffs).
-- Token usage.
-- Commit metadata (SHA, branch, author).
+Each commit on the configured branch (`entire/checkpoints/v1` by default) carries a JSON object as its commit-message body. The adapter — `EntireAdapter` in `context_mesh.adapters` — walks the branch in `git log --reverse` order and parses each message body into a `SessionReference`:
+
+| JSON field | Required | Notes |
+| --- | --- | --- |
+| `session_id` | yes | string |
+| `agent` | yes | string (`claude-code`, `cursor`, ...) |
+| `started_at` | yes | epoch integer or ISO-8601 string |
+| `ended_at` | no | same shape as `started_at` |
+| `repo` | no | falls back to the repo's directory name |
+| `branch` | no | string or null |
+| `commit_sha` | no | string or null |
+| `turn_count` | no | int |
+| `token_usage` | no | int |
+| `file_changes` | no | array of strings |
+| `transcript` | yes (on `fetch`) | the literal session text |
+
+Empty bodies, non-JSON bodies, non-object payloads, missing required keys, and type mismatches emit a `malformed_checkpoint` warning and skip the commit.
 
 ### What We Produce
 
-For each checkpoint, the distillation engine produces:
-- One or more **episodic** nodes (capturing the session's events).
-- Potentially one or more **semantic** nodes (if the session yielded generalizable rules).
-- Potentially one or more **procedural** nodes (if the session captured a workflow).
-- Edges linking back to the source session.
+For each checkpoint that survives parsing, the distillation engine produces zero or more `MemoryNode`s — typically one or two, with kinds and structured fields driven by the transcript text. Intra-session edges (`semantic→episodic` as `generalizes`, `procedural→episodic` as `applies_to`) are inferred at distill time. Edges linking back to a node's source session live in the node's `source_session_id` foreign key.
 
 ### How The Adapter Works
 
-1. **Discovery.** The adapter reads the `entire/checkpoints/v1` branch via standard git operations (`git log`, `git show`).
-2. **Incremental sync.** Only checkpoints newer than the last sync timestamp are processed.
-3. **Distillation.** Each checkpoint's transcript is passed through the distillation engine.
-4. **Persistence.** Resulting nodes/edges are written to the `context-mesh` store.
-5. **Hooks.** The adapter optionally installs a `post-commit` hook that triggers distillation automatically.
+1. **Discovery.** `EntireAdapter.discover()` shells out to `git rev-parse`, `git log --reverse`, and `git show -s --format=%B`. Read-only over the git tree.
+2. **Cursor + seen-set.** Durable state lives in `adapter_sync_state` (one row per adapter, keyed by `name`). `cursor` is the SHA of the last successfully processed commit; `state["seen_shas"]` is a sorted JSON array of every commit that has already been ingested. The cursor is an optimization (the next walk uses `<cursor>..<branch>`); the seen-set is the authoritative idempotency guarantee.
+3. **Force-push recovery.** If the cursor SHA becomes unreachable from the branch (force-push or rebase), the adapter logs `entire_cursor_unreachable` and falls back to walking the full branch. The seen-set still filters out previously-ingested commits, so duplicate work is avoided across rewrites.
+4. **Distillation.** Each checkpoint's `transcript` is passed through the configured `Distiller`.
+5. **Persistence.** Resulting nodes are written to the `context-mesh` store, and `merge_state` updates the cursor + seen-set in a single `Mesh.set_sync_state` call.
+
+The adapter is read-only over the git tree: it never writes commits, branches, hooks, or refs.
 
 ### Composability With Entire's Semantic Search
 
@@ -54,20 +63,41 @@ A team can use both. They are not competitors; they are layers.
 
 `context-mesh` operates on the Entire **checkpoints** primitive (the open-source, shipped CLI surface).
 
+See `docs/ADAPTERS.md` for the full reference (Protocol contract, error events, JSON schema, sync state shape).
+
 ---
 
 ## Integration 2: `.agent-memory/` directories
 
-For users with existing `.agent-memory/` directories (a single-repo persistent memory format), `context-mesh` ships an adapter that imports records into the mesh.
+For users with existing `.agent-memory/` directories (a single-repo persistent memory format), `context-mesh` ships an adapter — `AgentMemoryAdapter` in `context_mesh.adapters` — that imports records into the mesh.
 
-### Migration Path
+### Frontmatter grammar
 
-1. The adapter reads existing `.agent-memory/` directories.
-2. Each record maps to a `context-mesh` node:
-   - Structured fields (decisions, failed_approaches, etc.) carry over directly.
-   - The embedding is recomputed in the new system.
-   - The session reference is preserved.
-3. After import, the original directory can stay in place (read-only) or be retired.
+Each `.md` file in `.agent-memory/` is treated as one session transcript. Files must begin with a YAML-style fenced frontmatter block:
+
+```
+---
+session_id: <string>      # required
+agent: <string>           # required
+started_at: <epoch|ISO>   # required
+ended_at: <epoch|ISO>     # optional
+turn_count: <int>         # optional
+token_usage: <int>        # optional
+repo: <string>            # optional; falls back to the repo's directory name
+branch: <string>          # optional
+commit_sha: <string>      # optional
+tags: a, b, c             # optional, comma-separated
+---
+<transcript body>
+```
+
+Blank lines and `#`-comment lines inside the frontmatter are ignored. Malformed lines, missing or unterminated `---` fences, and missing required keys emit a `malformed_frontmatter` warning and skip the file.
+
+### Cursor + seen-set mechanism
+
+`seen_key` is the SHA-256 of the file's raw bytes; the seen-set lives in `state["seen_hashes"]` (sorted JSON array). The cursor is the ISO-8601 UTC timestamp of the last `merge_state` call — informational only, since the seen-set is the authoritative filter. Re-running a sync against an unchanged `.agent-memory/` directory is a no-op. The `.agent-memory/` directory itself is allowed to be missing; the adapter logs `agent_memory_dir_missing` once and returns an empty discovery list.
+
+See `docs/ADAPTERS.md` for the full reference.
 
 ---
 

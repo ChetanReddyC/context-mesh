@@ -158,6 +158,38 @@ List recent audit-log rows, newest first. Filter by actor or event type.
 
 ---
 
+## `context-mesh sync <adapter>`
+
+Run one sync pass for a source adapter, distilling new sessions into
+memory nodes. `<adapter>` is `agent-memory` or `entire`. The command
+constructs the requested adapter against `--repo`, runs
+`Mesh.sync(adapter=..., distiller=..., embedder=...)`, and prints either
+a text summary (default) or a JSON object (`--json`). Audits as
+`event_type='sync_pull'`.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `<adapter>` | required | `agent-memory` or `entire`. |
+| `--repo` | cwd | Directory the adapter operates on. |
+| `--branch` | `entire/checkpoints/v1` | Git branch (Entire only; ignored by `agent-memory`). |
+| `--limit` | `100` | Max references to process (`1..10000`). |
+| `--dry-run` | off | Discover-only; print what *would* be ingested. |
+| `--distiller` | `heuristic` | `heuristic` or `claude-cli`. |
+| `--json` | off | Emit a JSON summary instead of the text view. |
+| `--db` | resolved | Override the database path. |
+
+Examples:
+
+```bash
+context-mesh sync agent-memory --repo ./payments --dry-run
+context-mesh sync entire --repo ./payments --limit 50 --json
+```
+
+See `docs/ADAPTERS.md` for the full reference (Protocol contract, sync
+state shape, idempotency model).
+
+---
+
 ## `context-mesh tools`
 
 Emit the agent tool-schema list for the requested dialect.

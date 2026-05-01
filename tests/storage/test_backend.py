@@ -18,12 +18,15 @@ def test_in_memory_backend_applies_migrations() -> None:
     backend = SqliteVecBackend(":memory:")
     try:
         applied = backend.applied_migrations
-        assert len(applied) == 1
-        assert applied[0].version == 1
+        assert len(applied) == 2
+        assert [m.version for m in applied] == [1, 2]
         rows = backend.connection.execute(
             "SELECT version, name FROM schema_version ORDER BY version"
         ).fetchall()
-        assert rows == [(1, "0001_initial_schema")]
+        assert rows == [
+            (1, "0001_initial_schema"),
+            (2, "0002_adapter_sync_state"),
+        ]
     finally:
         backend.close()
 
@@ -43,7 +46,7 @@ def test_file_backed_backend_is_idempotent(tmp_path: Path) -> None:
     try:
         assert second.applied_migrations == []
         count = second.connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-        assert count == 1
+        assert count == 2
     finally:
         second.close()
 
@@ -126,6 +129,6 @@ def test_applied_migrations_returns_defensive_copy() -> None:
     try:
         snapshot = backend.applied_migrations
         snapshot.clear()
-        assert len(backend.applied_migrations) == 1
+        assert len(backend.applied_migrations) == 2
     finally:
         backend.close()

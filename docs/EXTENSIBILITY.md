@@ -144,50 +144,95 @@ max_tokens = 2000
 
 ## 4. Source Adapters
 
-Source adapters pull raw session data from external systems and feed it into the distillation engine.
+Source adapters pull raw session data from external systems and feed it into the distillation engine. They are the integration boundary between `context-mesh` and the wider agent ecosystem.
 
 ### Interface (`SourceAdapter`)
 
+`SourceAdapter` is a `@runtime_checkable` `typing.Protocol` defined in `context_mesh.adapters.protocol`. Any object exposing the seven members below is a valid adapter:
+
+```python
+class SourceAdapter(Protocol):
+    @property
+    def name(self) -> str: ...
+    def discover(self) -> list[SessionReference]: ...
+    def fetch(self, reference: SessionReference) -> SessionTranscript: ...
+    def sync_state(self) -> SyncState | None: ...
+    def set_sync_state(self, state: SyncState) -> None: ...
+    def seen_key(self, reference: SessionReference) -> str: ...
+    def merge_state(
+        self,
+        existing: SyncState | None,
+        processed_refs: Sequence[SessionReference],
+    ) -> tuple[str, dict[str, Any]]: ...
 ```
-SourceAdapter:
-    name: str
-    discover() → list[SessionReference]
-    fetch(reference: SessionReference) → SessionTranscript
-    sync_state() → SyncState
-    set_sync_state(state: SyncState) → None
-```
+
+`SessionReference`, `SessionTranscript`, and `SyncState` are frozen dataclasses in the same module. Each adapter owns one row in the `adapter_sync_state` table (keyed by `name`); `seen_key` + `merge_state` are how the adapter tells the orchestrator which references have already been ingested.
 
 ### Built-In Adapters
 
-- `EntireAdapter` — reads from Entire's `entire/checkpoints/v1` git branch.
-- `AgentMemoryAdapter` — imports from `.agent-memory/` directories.
-- `ClaudeCodeTranscriptAdapter` — reads Claude Code's session log files.
-- `CursorAdapter` — reads from Cursor's session storage.
+Shipped in v1:
+
+- `AgentMemoryAdapter` — reads `.md` session transcripts from `.agent-memory/` directories.
+- `EntireAdapter` — reads JSON-payload checkpoint commits from a git branch (default `entire/checkpoints/v1`).
+
+Reserved for v1.x:
+
+- `ClaudeCodeTranscriptAdapter` — would read Claude Code's session log files.
+- `CursorAdapter` — would read from Cursor's session storage.
 
 ### Writing A Custom Adapter
 
-```python
-from context_mesh.adapters import SourceAdapter, SessionReference, SessionTranscript
+Implement all seven Protocol members. The skeleton:
 
-class MyToolAdapter(SourceAdapter):
+```python
+from collections.abc import Sequence
+from typing import Any
+from context_mesh.adapters import (
+    SessionReference, SessionTranscript, SourceAdapter, SyncState,
+)
+from context_mesh.api import Mesh
+
+
+class MyToolAdapter:
     name = "my-tool"
 
-    def discover(self):
-        # Find new sessions since last sync
-        return [...]
+    def __init__(self, mesh: Mesh) -> None:
+        self._mesh = mesh
 
-    def fetch(self, reference):
-        # Pull the actual transcript
-        return SessionTranscript(...)
+    def discover(self) -> list[SessionReference]:
+        return []
+
+    def fetch(self, reference: SessionReference) -> SessionTranscript:
+        return SessionTranscript(reference=reference, text="...")
+
+    def sync_state(self) -> SyncState | None:
+        return self._mesh.get_sync_state(self.name)
+
+    def set_sync_state(self, state: SyncState) -> None:
+        self._mesh.set_sync_state(self.name, cursor=state.cursor, state=dict(state.state))
+
+    def seen_key(self, reference: SessionReference) -> str:
+        return dict(reference.metadata)["my_tool_id"]
+
+    def merge_state(
+        self,
+        existing: SyncState | None,
+        processed_refs: Sequence[SessionReference],
+    ) -> tuple[str, dict[str, Any]]:
+        prior = list(existing.state.get("seen_keys", [])) if existing else []
+        merged = sorted(set(prior) | {self.seen_key(r) for r in processed_refs})
+        cursor = processed_refs[-1].source_id if processed_refs else (
+            existing.cursor if existing else ""
+        )
+        return cursor, {"seen_keys": merged}
+
+
+assert isinstance(MyToolAdapter(mesh), SourceAdapter)
 ```
 
-Register the adapter:
+Pass an instance to `Mesh.sync(adapter=..., distiller=..., embedder=...)` to run a sync pass. The `context-mesh sync` CLI in v1 only knows about `agent-memory` and `entire`; route custom adapters through your own launcher or in-process call.
 
-```toml
-[adapters.my-tool]
-enabled = true
-config_path = "./.context-mesh/my-tool.toml"
-```
+See `docs/ADAPTERS.md` for the full reference (per-adapter contracts, sync-state shapes, idempotency proofs, audit events).
 
 ---
 

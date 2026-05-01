@@ -90,6 +90,16 @@ and invalid `Literal` enum values raise `ConfigError`.
 | `entire_enabled` | bool | `false` | Enable the Entire adapter (Phase 5). |
 | `agent_memory_enabled` | bool | `false` | Enable the agent-memory adapter (Phase 5). |
 
+In v1 these flags are loaded into the `AdaptersConfig` dataclass but
+are **not yet consulted** by `Mesh.sync` or the `context-mesh sync`
+command. Sync is driven explicitly: `context-mesh sync <adapter>` on
+the CLI, or `Mesh.sync(adapter=AgentMemoryAdapter(...) | EntireAdapter(...))`
+in the library. The flags reserve the surface for a future
+auto-registration step that will scan registered adapters and run sync
+passes for those whose `<name>_enabled` flag is `true`. Until that
+ships, treat the flags as advisory only. See `docs/ADAPTERS.md` for
+the full source-adapter reference.
+
 ## Programmatic Access
 
 ```python

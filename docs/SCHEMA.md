@@ -204,6 +204,30 @@ Audit log is append-only. It powers usage analytics, debugging, and the `mark_he
 
 ---
 
+## 7. Adapter Sync State
+
+Per-source-adapter durable state. One row per adapter, keyed by `adapter_name`. Read by `Mesh.get_sync_state` and written by `Mesh.set_sync_state`; accessed indirectly through every `SourceAdapter` implementation.
+
+### Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `adapter_name` | TEXT (PK) | yes | Stable adapter identifier (e.g. `agent-memory`, `entire`). |
+| `cursor` | TEXT | yes (default `''`) | Human-readable position pointer — an ISO timestamp, a git SHA, etc. Defined by the adapter. |
+| `last_synced_at` | INTEGER (unix ts) | no | Server-stamped on every `Mesh.set_sync_state` upsert. |
+| `state_json` | TEXT (JSON object, default `'{}'`) | yes | Opaque adapter-specific state. Validated as a JSON object on read; corrupted rows raise `RuntimeError`. |
+
+### What each adapter writes
+
+- **`AgentMemoryAdapter`** — `cursor` is the ISO-8601 UTC timestamp of the last `merge_state` call; `state_json` is `{"seen_hashes": ["<sha256>", ...]}`.
+- **`EntireAdapter`** — `cursor` is the SHA of the last successfully processed checkpoint commit (or `''` initially); `state_json` is `{"seen_shas": ["<commit-sha>", ...]}`.
+
+Both built-in adapters store their seen-set as a sorted JSON array. Idempotency is driven by the seen-set; the cursor is an optimization that lets the next walk skip already-processed prefixes.
+
+See `docs/ADAPTERS.md` for the full Protocol contract and per-adapter behaviour.
+
+---
+
 ## Database Layout (SQLite Tables)
 
 ```sql
@@ -315,6 +339,15 @@ CREATE TABLE audit (
 CREATE INDEX idx_audit_timestamp ON audit(timestamp);
 CREATE INDEX idx_audit_actor ON audit(actor);
 CREATE INDEX idx_audit_event ON audit(event_type);
+
+-- Per-source-adapter durable sync state.
+-- See migrations/0002_adapter_sync_state.sql.
+CREATE TABLE adapter_sync_state (
+  adapter_name TEXT PRIMARY KEY,
+  cursor TEXT NOT NULL DEFAULT '',
+  last_synced_at INTEGER,
+  state_json TEXT NOT NULL DEFAULT '{}'
+);
 ```
 
 ---
