@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from context_mesh import __version__
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 if TYPE_CHECKING:
     import subprocess
@@ -185,7 +188,7 @@ def test_missing_db_error(cli_runner: CliRun, tmp_path: Path) -> None:
 
 def test_serve_command_help(cli_runner: CliRun) -> None:
     result = cli_runner(["serve", "--help"])
-    combined = result.stdout + result.stderr
+    combined = _ANSI_RE.sub("", result.stdout + result.stderr)
     assert "--host" in combined
     assert "--port" in combined
     assert "--db" in combined

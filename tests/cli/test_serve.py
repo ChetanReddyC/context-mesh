@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -14,13 +15,16 @@ if TYPE_CHECKING:
 
 runner = CliRunner()
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def test_serve_help_lists_options() -> None:
     result = runner.invoke(app, ["serve", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--host" in result.output
-    assert "--port" in result.output
-    assert "--db" in result.output
+    plain = _ANSI_RE.sub("", result.output)
+    assert "--host" in plain
+    assert "--port" in plain
+    assert "--db" in plain
 
 
 def test_serve_missing_db_exits_1(tmp_path: Path) -> None:
