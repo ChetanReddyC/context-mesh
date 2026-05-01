@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
+    from context_mesh.distillation.protocol import Distiller, DistillerCandidate
     from context_mesh.embeddings.protocol import EmbeddingProvider
 
 
@@ -130,6 +131,13 @@ _W_USAGE: Final[float] = 0.10
 _GRAPH_RELATIONS: Final[frozenset[str]] = frozenset(
     {"applies_to", "generalizes", "supersedes", "contradicts"}
 )
+
+_DISTILL_INFER_EDGE_CAP: Final[int] = 16
+_DISTILL_INFERRED_EDGE_CONFIDENCE: Final[float] = 0.5
+
+
+def _distill_tuple_to_list(t: tuple[str, ...]) -> list[str] | None:
+    return list(t) if t else None
 
 
 def _compute_recency_score(
@@ -864,6 +872,163 @@ class Mesh:
         )
 
         return cluster
+
+    def distill(
+        self,
+        session_text: str,
+        *,
+        distiller: Distiller,
+        scope_id: str,
+        source_session_id: str,
+        source_repo: str,
+        actor: str = "agent:distiller",
+    ) -> list[MemoryNode]:
+        """Distill a session transcript into persisted memory nodes.
+
+        Runs the supplied `distiller` over `session_text`, persists each
+        resulting candidate as a `MemoryNode` (one commit per node), and then
+        materializes intra-session inferred edges (`semantic` -> `episodic` as
+        `generalizes`, `procedural` -> `episodic` as `applies_to`, both with
+        `created_by="auto"`). Each node insert and each inferred edge insert
+        emits its own `add` audit row tagged with the distiller name and
+        candidate provenance. Returns the persisted nodes in distillation
+        order. If the input is empty or the distiller yields no candidates,
+        returns `[]`.
+        """
+        if not scope_id or not scope_id.strip():
+            raise ValueError("scope_id must not be empty")
+        if not source_session_id or not source_session_id.strip():
+            raise ValueError("source_session_id must not be empty")
+        if not source_repo or not source_repo.strip():
+            raise ValueError("source_repo must not be empty")
+        if not actor or not actor.strip():
+            raise ValueError("actor must not be empty")
+
+        if not session_text or not session_text.strip():
+            return []
+
+        candidates = distiller.distill(session_text)
+        if not candidates:
+            return []
+
+        conn = self._backend.connection
+        persisted: list[MemoryNode] = []
+        for candidate in candidates:
+            node = self.make_node(
+                kind=candidate.kind,
+                body=candidate.body,
+                headline=candidate.headline,
+                scope_id=scope_id,
+                source_session_id=source_session_id,
+                source_repo=source_repo,
+                tags=_distill_tuple_to_list(candidate.tags),
+                decisions=_distill_tuple_to_list(candidate.decisions),
+                failed_approaches=_distill_tuple_to_list(candidate.failed_approaches),
+                error_signatures=_distill_tuple_to_list(candidate.error_signatures),
+                file_dependencies=_distill_tuple_to_list(candidate.file_paths),
+                importance=candidate.importance,
+            )
+            conn.execute(_INSERT_NODE_SQL, node.to_row())
+            conn.commit()
+
+            node_metadata: dict[str, Any] = {
+                "kind": node.kind,
+                "scope_id": node.scope_id,
+                "distiller": distiller.name,
+                "headline": node.headline[:60],
+                "candidate_confidence": candidate.confidence,
+                "redaction_finding_count": len(candidate.redaction_findings),
+                "redaction_kinds": sorted({f.kind for f in candidate.redaction_findings}),
+                "source_session_id": node.source_session_id,
+            }
+            _audit.log(
+                conn,
+                "add",
+                actor,
+                node_ids=[node.id],
+                metadata=node_metadata,
+            )
+            persisted.append(node)
+
+        inferred_edges = self._infer_intra_session_edges(
+            persisted,
+            candidates,
+            distiller_name=distiller.name,
+            source_session_id=source_session_id,
+        )
+
+        for edge in inferred_edges:
+            conn.execute(_INSERT_EDGE_SQL, edge.to_row())
+            conn.commit()
+            edge_metadata: dict[str, Any] = {
+                "edge_id": edge.id,
+                "relation": edge.relation,
+                "confidence": edge.confidence,
+                "action": "infer_edge",
+                "inferred_by": "distill",
+                "distiller": distiller.name,
+                "from_node_id": edge.from_node_id,
+                "to_node_id": edge.to_node_id,
+                "session_id": source_session_id,
+            }
+            _audit.log(
+                conn,
+                "add",
+                actor,
+                node_ids=[edge.from_node_id, edge.to_node_id],
+                metadata=edge_metadata,
+            )
+
+        return persisted
+
+    def _infer_intra_session_edges(
+        self,
+        persisted: list[MemoryNode],
+        candidates: list[DistillerCandidate],
+        *,
+        distiller_name: str,
+        source_session_id: str,
+    ) -> list[MemoryEdge]:
+        semantic_idx = [i for i, c in enumerate(candidates) if c.kind == "semantic"]
+        episodic_idx = [i for i, c in enumerate(candidates) if c.kind == "episodic"]
+        procedural_idx = [i for i, c in enumerate(candidates) if c.kind == "procedural"]
+
+        edge_metadata: dict[str, Any] = {
+            "inferred_by": "distill",
+            "distiller": distiller_name,
+            "session_id": source_session_id,
+        }
+
+        pairs: list[MemoryEdge] = []
+        for s in semantic_idx:
+            for e in episodic_idx:
+                pairs.append(
+                    self.make_edge(
+                        from_node_id=persisted[s].id,
+                        to_node_id=persisted[e].id,
+                        relation="generalizes",
+                        created_by="auto",
+                        confidence=_DISTILL_INFERRED_EDGE_CONFIDENCE,
+                        metadata=dict(edge_metadata),
+                    )
+                )
+                if len(pairs) >= _DISTILL_INFER_EDGE_CAP:
+                    return pairs
+        for p in procedural_idx:
+            for e in episodic_idx:
+                pairs.append(
+                    self.make_edge(
+                        from_node_id=persisted[p].id,
+                        to_node_id=persisted[e].id,
+                        relation="applies_to",
+                        created_by="auto",
+                        confidence=_DISTILL_INFERRED_EDGE_CONFIDENCE,
+                        metadata=dict(edge_metadata),
+                    )
+                )
+                if len(pairs) >= _DISTILL_INFER_EDGE_CAP:
+                    return pairs
+        return pairs
 
     @staticmethod
     def _coerce_embedding_bytes(embedding: list[float] | bytes) -> bytes:
